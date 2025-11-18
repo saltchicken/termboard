@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 use ratatui::{
     prelude::*,
     widgets::{
-        // ‼️ Removed `Circle` from imports below
+
         canvas::{self, Canvas, Context, Line as CanvasLine, Rectangle},
         Block,
         Borders,
@@ -78,7 +78,7 @@ enum Tool {
     #[default]
     Pointer,
     DrawRect,
-    // ‼️ Removed DrawCircle variant
+
     Connect,
 }
 
@@ -92,7 +92,7 @@ enum Mode {
 #[derive(Clone, Copy)]
 enum ShapeKind {
     Rectangle,
-    // ‼️ Removed Circle variant
+
 }
 
 #[derive(Clone)]
@@ -126,7 +126,7 @@ impl WhiteboardShape {
             ShapeKind::Rectangle => {
                 (x >= self.rect.x && x <= (self.rect.x + self.rect.width))
                     && (y >= self.rect.y && y <= (self.rect.y + self.rect.height))
-            } // ‼️ Removed ShapeKind::Circle match arm and ellipse math logic
+            }
         }
     }
 }
@@ -236,7 +236,7 @@ impl App {
                     Style::default()
                 },
             ),
-            // ‼️ Removed " (C)ircle " span from toolbar
+
             Span::styled(
                 " (L)ink ",
                 if self.active_tool == Tool::Connect {
@@ -283,7 +283,7 @@ impl App {
                     "Kind: {}",
                     match shape.kind {
                         ShapeKind::Rectangle => "Rectangle",
-                        // ‼️ Removed ShapeKind::Circle match arm
+
                     }
                 )));
                 text.push(Line::from("Label:"));
@@ -360,7 +360,7 @@ impl App {
                         color,
                         ..shape.rect
                     });
-                } // ‼️ Removed ShapeKind::Circle drawing logic match arm
+                }
             }
 
             // Draw the label
@@ -426,7 +426,7 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
                 KeyCode::Char('p') | KeyCode::Char('P') => self.active_tool = Tool::Pointer,
                 KeyCode::Char('r') | KeyCode::Char('R') => self.active_tool = Tool::DrawRect,
-                // ‼️ Removed KeyCode::Char('c') handler
+
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     if self.selected_shape_id.is_some() {
@@ -502,7 +502,7 @@ impl App {
                             };
                             self.shapes.insert(id, new_shape);
                         }
-                        // ‼️ Removed Tool::DrawCircle logic block
+
                         Tool::Connect => {
                             if let Some(id) = hovered_id {
                                 if let Some(start_id) = self.connect_start_id.take() {
