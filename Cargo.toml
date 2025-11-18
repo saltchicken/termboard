@@ -1,0 +1,20 @@
+[package]
+name = "tui_whiteboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = { version = "0.27.0", features = [
+  "event-stream",
+] }
+futures-util = { version = "0.3.30", default-features = false }
+ratatui = { version = "0.27.0", features = ["crossterm"] }
+tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "time"] }
+
+[profile.release]
+# Helps with binary size
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
