@@ -10,7 +10,8 @@ use futures_util::StreamExt;
 use ratatui::{
     prelude::*,
     widgets::{
-        canvas::{self, Canvas, Circle, Context, Line as CanvasLine, Rectangle},
+        // ‼️ Removed `Circle` from imports below
+        canvas::{self, Canvas, Context, Line as CanvasLine, Rectangle},
         Block,
         Borders,
         Paragraph,
@@ -39,12 +40,15 @@ async fn main() -> io::Result<()> {
         if app.should_quit {
             break;
         }
+
         // Draw the UI
         terminal.draw(|frame| app.ui(frame))?;
+
         // Handle input events
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or_else(|| Duration::from_secs(0));
+
         // Poll for event
         if crossterm::event::poll(timeout)? {
             match event_stream.next().await {
@@ -61,18 +65,20 @@ async fn main() -> io::Result<()> {
             last_tick = Instant::now();
         }
     }
+
     // Restore terminal
     terminal.exit()?;
     Ok(())
 }
 
 // --- App State and Logic ---
+
 #[derive(PartialEq, Eq, Clone, Copy, Default)]
 enum Tool {
     #[default]
     Pointer,
     DrawRect,
-    DrawCircle,
+    // ‼️ Removed DrawCircle variant
     Connect,
 }
 
@@ -86,7 +92,7 @@ enum Mode {
 #[derive(Clone, Copy)]
 enum ShapeKind {
     Rectangle,
-    Circle,
+    // ‼️ Removed Circle variant
 }
 
 #[derive(Clone)]
@@ -107,24 +113,20 @@ impl WhiteboardShape {
             self.rect.y + self.rect.height / 2.0,
         )
     }
+
     /// Moves the shape by a delta
     fn translate(&mut self, dx: f64, dy: f64) {
         self.rect.x += dx;
         self.rect.y += dy;
     }
+
     /// Checks if a world coordinate (x, y) is inside this shape
     fn contains(&self, x: f64, y: f64) -> bool {
         match self.kind {
             ShapeKind::Rectangle => {
                 (x >= self.rect.x && x <= (self.rect.x + self.rect.width))
                     && (y >= self.rect.y && y <= (self.rect.y + self.rect.height))
-            }
-            ShapeKind::Circle => {
-                let (cx, cy) = self.center();
-                let (rx, ry) = (self.rect.width / 2.0, self.rect.height / 2.0);
-                // Check if point is inside the ellipse defined by the rect
-                (((x - cx) / rx).powi(2) + ((y - cy) / ry).powi(2)) <= 1.0
-            }
+            } // ‼️ Removed ShapeKind::Circle match arm and ellipse math logic
         }
     }
 }
@@ -145,7 +147,6 @@ struct App {
     dragged_shape_id: Option<u64>,
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
-
     label_edit_buffer: String,
     connect_start_id: Option<u64>,
     next_id: u64,
@@ -153,7 +154,6 @@ struct App {
     pan_offset: (f64, f64),
     /// View dimensions in world coords
     view_size: (f64, f64),
-
     /// The Rect of the terminal area allocated to the canvas
     canvas_area: Rect,
     /// The last known mouse position (in terminal cells)
@@ -236,14 +236,7 @@ impl App {
                     Style::default()
                 },
             ),
-            Span::styled(
-                " (C)ircle ",
-                if self.active_tool == Tool::DrawCircle {
-                    Style::new().bg(Color::Blue)
-                } else {
-                    Style::default()
-                },
-            ),
+            // ‼️ Removed " (C)ircle " span from toolbar
             Span::styled(
                 " (L)ink ",
                 if self.active_tool == Tool::Connect {
@@ -290,10 +283,9 @@ impl App {
                     "Kind: {}",
                     match shape.kind {
                         ShapeKind::Rectangle => "Rectangle",
-                        ShapeKind::Circle => "Circle",
+                        // ‼️ Removed ShapeKind::Circle match arm
                     }
                 )));
-
                 text.push(Line::from("Label:"));
                 if self.mode == Mode::Editing {
                     // Show text buffer with a "cursor"
@@ -305,7 +297,6 @@ impl App {
                     text.push(Line::from(format!("> {}", shape.label)));
                     text.push(Line::from("(Press 'i' to edit)"));
                 }
-
                 text.push(Line::from(""));
                 text.push(Line::from("(Del) to delete"));
             }
@@ -323,14 +314,10 @@ impl App {
     fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
         let (world_x, world_y) =
             self.terminal_to_world_coords(self.mouse_cursor_pos.0, self.mouse_cursor_pos.1);
-
-
         let mode_str = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Editing => "EDITING",
         };
-
-
         let status_spans = Line::from(vec![
             Span::styled(format!(" {} ", mode_str), Style::new().bg(Color::Red)),
             Span::raw(format!(
@@ -338,7 +325,6 @@ impl App {
                 self.mouse_cursor_pos.0, self.mouse_cursor_pos.1, world_x, world_y
             )),
         ]);
-
         frame.render_widget(Paragraph::new(status_spans), area);
     }
 
@@ -347,7 +333,6 @@ impl App {
         // --- Draw Connections ---
         for conn in &self.connections {
             if let (Some(a), Some(b)) = (self.shapes.get(&conn.id_a), self.shapes.get(&conn.id_b)) {
-
                 ctx.draw(&CanvasLine {
                     x1: a.center().0,
                     y1: a.center().1,
@@ -361,7 +346,6 @@ impl App {
         // --- Draw Shapes ---
         for (id, shape) in &self.shapes {
             let mut color = shape.color;
-
             if self.selected_shape_id == Some(*id) {
                 color = Color::Blue;
             }
@@ -376,15 +360,7 @@ impl App {
                         color,
                         ..shape.rect
                     });
-                }
-                ShapeKind::Circle => {
-                    ctx.draw(&Circle {
-                        x: shape.center().0,
-                        y: shape.center().1,
-                        radius: shape.rect.width / 2.0, // Assuming width/height are same
-                        color,
-                    });
-                }
+                } // ‼️ Removed ShapeKind::Circle drawing logic match arm
             }
 
             // Draw the label
@@ -401,9 +377,7 @@ impl App {
         // Convert mouse cell pos to world coords
         let (world_x, world_y) =
             self.terminal_to_world_coords(self.mouse_cursor_pos.0, self.mouse_cursor_pos.1);
-
         // Draw a small crosshair
-
         ctx.draw(&CanvasLine {
             x1: world_x - 1.0,
             y1: world_y,
@@ -411,7 +385,6 @@ impl App {
             y2: world_y,
             color: Color::Yellow,
         });
-
         ctx.draw(&CanvasLine {
             x1: world_x,
             y1: world_y - 0.5,
@@ -453,7 +426,7 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
                 KeyCode::Char('p') | KeyCode::Char('P') => self.active_tool = Tool::Pointer,
                 KeyCode::Char('r') | KeyCode::Char('R') => self.active_tool = Tool::DrawRect,
-                KeyCode::Char('c') | KeyCode::Char('C') => self.active_tool = Tool::DrawCircle,
+                // ‼️ Removed KeyCode::Char('c') handler
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     if self.selected_shape_id.is_some() {
@@ -502,7 +475,6 @@ impl App {
             // --- Mouse Press ---
             MouseEventKind::Down(button) => {
                 let hovered_id = self.get_shape_at(world_x, world_y);
-
                 match button {
                     event::MouseButton::Left => match self.active_tool {
                         Tool::Pointer => {
@@ -530,23 +502,7 @@ impl App {
                             };
                             self.shapes.insert(id, new_shape);
                         }
-                        Tool::DrawCircle => {
-                            let id = self.new_id();
-                            let new_shape = WhiteboardShape {
-                                id,
-                                kind: ShapeKind::Circle,
-                                rect: canvas::Rectangle {
-                                    x: world_x - 3.0,
-                                    y: world_y - 3.0,
-                                    width: 6.0,
-                                    height: 6.0,
-                                    color: Color::Green,
-                                },
-                                label: String::new(),
-                                color: Color::Green,
-                            };
-                            self.shapes.insert(id, new_shape);
-                        }
+                        // ‼️ Removed Tool::DrawCircle logic block
                         Tool::Connect => {
                             if let Some(id) = hovered_id {
                                 if let Some(start_id) = self.connect_start_id.take() {
@@ -567,7 +523,6 @@ impl App {
                     _ => {}
                 }
             }
-
             // --- Mouse Drag ---
             MouseEventKind::Drag(button) => {
                 match button {
@@ -610,7 +565,6 @@ impl App {
                     _ => {}
                 }
             }
-
             // --- Mouse Release ---
             MouseEventKind::Up(button) => match button {
                 event::MouseButton::Left => {
@@ -644,7 +598,6 @@ impl App {
         if self.canvas_area.width == 0 || self.canvas_area.height == 0 {
             return (0.0, 0.0);
         }
-
         // Normalize coordinates within the canvas area (0.0 to 1.0)
         let norm_x =
             (col.saturating_sub(self.canvas_area.x)) as f64 / self.canvas_area.width as f64;
@@ -671,6 +624,7 @@ impl App {
 }
 
 // --- TUI Boilerplate ---
+
 /// A simple wrapper for terminal setup and teardown
 struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -689,7 +643,6 @@ impl Tui {
 
         // Clear screen
         terminal.clear()?;
-
         Ok(Self { terminal })
     }
 
@@ -708,7 +661,6 @@ impl Tui {
         disable_raw_mode()?;
         io::stdout().execute(LeaveAlternateScreen)?;
         io::stdout().execute(DisableMouseCapture)?;
-
         Ok(())
     }
 }
