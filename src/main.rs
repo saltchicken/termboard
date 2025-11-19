@@ -1,5 +1,4 @@
 mod config;
-
 use crate::config::setup_config;
 use crossterm::{
     event::{
@@ -14,35 +13,57 @@ use ratatui::{
     prelude::*,
     widgets::{
         canvas::{self, Canvas, Context, Line as CanvasLine, Rectangle},
-        Block, Borders, Paragraph,
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph,
     },
 };
-
-
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 use std::{
     collections::HashMap,
-
     io::{self, Stdout},
     time::{Duration, Instant},
 };
 
-
-
 /// We need tokio's runtime for the async event loop
 #[tokio::main]
 async fn main() -> io::Result<()> {
-
     let config = setup_config()?;
-
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&config.database_url)
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string()))?;
 
+    // ‼️ Create Boards Table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS boards (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
+    // ‼️ Create default board if none exists
+    let default_exists: bool = sqlx::query("SELECT EXISTS(SELECT 1 FROM boards)")
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .get(0);
+
+    if !default_exists {
+        sqlx::query("INSERT INTO boards (id, name) VALUES (1, 'Default Board')")
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
     // Run Migrations (Create Tables)
+    // ‼️ Added board_id column
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shapes (
@@ -53,7 +74,8 @@ async fn main() -> io::Result<()> {
             width DOUBLE PRECISION NOT NULL,
             height DOUBLE PRECISION NOT NULL,
             label TEXT NOT NULL,
-            color TEXT NOT NULL
+            color TEXT NOT NULL,
+            board_id BIGINT NOT NULL DEFAULT 1
         )
         "#,
     )
@@ -61,24 +83,57 @@ async fn main() -> io::Result<()> {
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
+    // ‼️ Added board_id to connections for easier cleanup
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS connections (
             id SERIAL PRIMARY KEY,
             id_a BIGINT NOT NULL,
-            id_b BIGINT NOT NULL
+            id_b BIGINT NOT NULL,
+            board_id BIGINT NOT NULL DEFAULT 1
         )
         "#,
     )
     .execute(&pool)
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let _ = sqlx::query(
+        "ALTER TABLE shapes ADD COLUMN IF NOT EXISTS board_id BIGINT NOT NULL DEFAULT 1",
+    )
+    .execute(&pool)
+    .await;
+
+    let _ = sqlx::query(
+        "ALTER TABLE connections ADD COLUMN IF NOT EXISTS board_id BIGINT NOT NULL DEFAULT 1",
+    )
+    .execute(&pool)
+    .await;
+
+    let _ = sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'shapes_pkey'
+            ) THEN
+                ALTER TABLE shapes DROP CONSTRAINT shapes_pkey;
+                ALTER TABLE shapes ADD PRIMARY KEY (board_id, id);
+            END IF;
+        END $$;
+        "#,
+    )
+    .execute(&pool)
+    .await;
 
     // --- TUI Setup ---
     let mut terminal = Tui::new()?;
 
     // --- App State ---
     let mut app = App::new(pool);
+    // ‼️ Load the initial board list and state
+    app.refresh_board_list().await;
+    app.load_state().await;
+
     let tick_rate = Duration::from_millis(33); // ~30 FPS
     let mut last_tick = Instant::now();
     let mut event_stream = EventStream::new();
@@ -134,6 +189,7 @@ enum Mode {
     #[default]
     Normal,
     Editing,
+    BoardMenu, // ‼️ New Mode for selecting boards
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -189,6 +245,7 @@ impl WhiteboardShape {
         } else {
             half_w / dx.abs()
         };
+
         let scale_y = if dy == 0.0 {
             f64::INFINITY
         } else {
@@ -196,6 +253,7 @@ impl WhiteboardShape {
         };
 
         let scale = scale_x.min(scale_y);
+
         (cx + dx * scale, cy + dy * scale)
     }
 
@@ -222,6 +280,7 @@ impl WhiteboardShape {
                 let new_width = (target_x - self.rect.x).max(1.0);
                 let old_top = self.rect.y + self.rect.height;
                 let new_height = (old_top - target_y).max(1.0);
+
                 self.rect.width = new_width;
                 self.rect.y = target_y; // moving bottom edge
                 self.rect.height = new_height;
@@ -231,8 +290,10 @@ impl WhiteboardShape {
                 // Changing x and y (both min values)
                 let old_right = self.rect.x + self.rect.width;
                 let old_top = self.rect.y + self.rect.height;
+
                 let new_width = (old_right - target_x).max(1.0);
                 let new_height = (old_top - target_y).max(1.0);
+
                 self.rect.x = target_x;
                 self.rect.y = target_y;
                 self.rect.width = new_width;
@@ -244,6 +305,7 @@ impl WhiteboardShape {
                 let old_right = self.rect.x + self.rect.width;
                 let new_width = (old_right - target_x).max(1.0);
                 let new_height = (target_y - self.rect.y).max(1.0);
+
                 self.rect.x = target_x;
                 self.rect.width = new_width;
                 self.rect.height = new_height;
@@ -297,6 +359,12 @@ struct Connection {
     id_b: u64,
 }
 
+// ‼️ Simple struct for Board List
+struct BoardInfo {
+    id: i64,
+    name: String,
+}
+
 /// Holds the entire state of our application.
 struct App {
     pool: PgPool,
@@ -304,15 +372,26 @@ struct App {
     connections: Vec<Connection>,
     active_tool: Tool,
     mode: Mode,
+
+    // ‼️ Board Management State
+    current_board_id: i64,
+    current_board_name: String,
+    available_boards: Vec<BoardInfo>,
+    board_list_state: ListState,
+    new_board_input: String, // Used when creating a new board
+
     /// ID of the shape currently being dragged.
     dragged_shape_id: Option<u64>,
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
     resizing_handle: Option<ResizeHandle>,
     is_resizing: bool,
+
     label_edit_buffer: String,
+
     connect_start_id: Option<u64>,
     next_id: u64,
+
     /// Pan offset (top-left corner of the view in world coords)
     pan_offset: (f64, f64),
     /// View dimensions in world coords
@@ -327,6 +406,7 @@ struct App {
     drag_start_pos: Option<(f64, f64)>,
     is_panning: bool,
     is_dragging: bool,
+
     should_quit: bool,
     status_msg: String,
 }
@@ -339,6 +419,14 @@ impl App {
             connections: Vec::new(),
             active_tool: Tool::Pointer,
             mode: Mode::Normal,
+
+            // ‼️ Initialize Board defaults
+            current_board_id: 1,
+            current_board_name: "Default".to_string(),
+            available_boards: Vec::new(),
+            board_list_state: ListState::default(),
+            new_board_input: String::new(),
+
             dragged_shape_id: None,
             selected_shape_id: None,
             resizing_handle: None,
@@ -355,13 +443,61 @@ impl App {
             is_panning: false,
             is_dragging: false,
             should_quit: false,
-            status_msg: String::from("Ready. Press 'S' to Save, 'O' to Open."),
+            status_msg: String::from("Ready. Press 'B' for Boards."),
         }
     }
 
     fn new_id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
+    }
+
+    // ‼️ Fetch list of boards from DB
+    async fn refresh_board_list(&mut self) {
+        let rows = sqlx::query("SELECT id, name FROM boards ORDER BY id")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+        self.available_boards = rows
+            .into_iter()
+            .map(|r| BoardInfo {
+                id: r.get("id"),
+                name: r.get("name"),
+            })
+            .collect();
+
+        // Ensure selection index is valid
+        if self.board_list_state.selected().is_none() && !self.available_boards.is_empty() {
+            self.board_list_state.select(Some(0));
+        }
+    }
+
+    // ‼️ Create a new board
+    async fn create_board(&mut self, name: &str) {
+        if name.trim().is_empty() {
+            return;
+        }
+        let res = sqlx::query("INSERT INTO boards (name) VALUES ($1) RETURNING id")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await;
+
+        match res {
+            Ok(row) => {
+                let new_id: i64 = row.get("id");
+                self.current_board_id = new_id;
+                self.current_board_name = name.to_string();
+                self.refresh_board_list().await;
+                // Clear current canvas for the new board
+                self.shapes.clear();
+                self.connections.clear();
+                self.next_id = 0;
+                self.status_msg = format!("Created Board '{}'", name);
+                self.mode = Mode::Normal;
+            }
+            Err(e) => self.status_msg = format!("Error creating board: {}", e),
+        }
     }
 
     /// Saves all current shapes and connections to the DB
@@ -375,12 +511,16 @@ impl App {
             }
         };
 
-        // Clear existing data (Simple strategy: Wipe and Rewrite)
-        // Note: In a real app, you might want an 'upsert' strategy or keep track of dirty states.
-        let _ = sqlx::query("DELETE FROM connections")
+        // ‼️ Modified to only delete items for CURRENT board
+        let _ = sqlx::query("DELETE FROM connections WHERE board_id = $1")
+            .bind(self.current_board_id)
             .execute(&mut *tx)
             .await;
-        let _ = sqlx::query("DELETE FROM shapes").execute(&mut *tx).await;
+
+        let _ = sqlx::query("DELETE FROM shapes WHERE board_id = $1")
+            .bind(self.current_board_id)
+            .execute(&mut *tx)
+            .await;
 
         // Save Shapes
         for shape in self.shapes.values() {
@@ -392,8 +532,9 @@ impl App {
                 _ => "Gray", // Fallback
             };
 
+            // ‼️ Added board_id to INSERT
             let res = sqlx::query(
-                "INSERT INTO shapes (id, kind, x, y, width, height, label, color) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                "INSERT INTO shapes (id, kind, x, y, width, height, label, color, board_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
             )
             .bind(shape.id as i64)
             .bind("Rectangle")
@@ -403,6 +544,7 @@ impl App {
             .bind(shape.rect.height)
             .bind(&shape.label)
             .bind(color_str)
+            .bind(self.current_board_id)
             .execute(&mut *tx)
             .await;
 
@@ -414,11 +556,14 @@ impl App {
 
         // Save Connections
         for conn in &self.connections {
-            let res = sqlx::query("INSERT INTO connections (id_a, id_b) VALUES ($1, $2)")
-                .bind(conn.id_a as i64)
-                .bind(conn.id_b as i64)
-                .execute(&mut *tx)
-                .await;
+            // ‼️ Added board_id to INSERT
+            let res =
+                sqlx::query("INSERT INTO connections (id_a, id_b, board_id) VALUES ($1, $2, $3)")
+                    .bind(conn.id_a as i64)
+                    .bind(conn.id_b as i64)
+                    .bind(self.current_board_id)
+                    .execute(&mut *tx)
+                    .await;
 
             if let Err(e) = res {
                 self.status_msg = format!("Save Error: {}", e);
@@ -440,8 +585,9 @@ impl App {
         self.connections.clear();
         self.next_id = 0;
 
-        // Load Shapes
-        let rows = match sqlx::query("SELECT * FROM shapes")
+        // ‼️ Added filtering by board_id
+        let rows = match sqlx::query("SELECT * FROM shapes WHERE board_id = $1")
+            .bind(self.current_board_id)
             .fetch_all(&self.pool)
             .await
         {
@@ -489,8 +635,9 @@ impl App {
             self.shapes.insert(shape.id, shape);
         }
 
-        // Load Connections
-        let conn_rows = match sqlx::query("SELECT * FROM connections")
+        // ‼️ Added filtering by board_id
+        let conn_rows = match sqlx::query("SELECT * FROM connections WHERE board_id = $1")
+            .bind(self.current_board_id)
             .fetch_all(&self.pool)
             .await
         {
@@ -510,7 +657,16 @@ impl App {
             });
         }
 
-        self.status_msg = "Loaded Successfully!".to_string();
+        // Update board name for UI
+        if let Ok(row) = sqlx::query("SELECT name FROM boards WHERE id = $1")
+            .bind(self.current_board_id)
+            .fetch_one(&self.pool)
+            .await
+        {
+            self.current_board_name = row.get("name");
+        }
+
+        self.status_msg = format!("Loaded Board: {}", self.current_board_name);
     }
 
     /// Main draw call
@@ -559,8 +715,15 @@ impl App {
                     Style::default()
                 },
             ),
-            Span::raw(" | (I)nspect/Edit | (S)ave | (O)pen/Load | (Q)uit"),
+            Span::raw(" | (I)nspect | (S)ave | (O)pen | "),
+            // ‼️ Added Board menu hint
+            Span::styled(
+                " (B)oards ",
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("| (Q)uit"),
         ]);
+
         frame.render_widget(Paragraph::new(toolbar_spans), main_chunks[0]);
 
         // --- 2. Canvas ---
@@ -568,12 +731,18 @@ impl App {
         let y_bounds = [self.pan_offset.1, self.pan_offset.1 + self.view_size.1];
 
         let canvas = Canvas::default()
-            .block(Block::default().title("Whiteboard").borders(Borders::ALL))
+            // ‼️ Show current board name in title
+            .block(
+                Block::default()
+                    .title(format!("Whiteboard: {}", self.current_board_name))
+                    .borders(Borders::ALL),
+            )
             .x_bounds(x_bounds)
             .y_bounds(y_bounds)
             .paint(|ctx| {
                 self.draw_on_canvas(ctx);
             });
+
         frame.render_widget(canvas, self.canvas_area);
 
         // --- 3. Inspector Panel ---
@@ -581,11 +750,70 @@ impl App {
 
         // --- 4. Status Bar ---
         self.draw_status_bar(frame, main_chunks[2]);
+
+        // ‼️ Render Board Menu Overlay if active
+        if self.mode == Mode::BoardMenu {
+            self.draw_board_menu(frame);
+        }
+    }
+
+    // ‼️ New Function to draw the Board Selection Menu
+    fn draw_board_menu(&mut self, frame: &mut Frame) {
+        let area = centered_rect(60, 50, frame.area());
+        frame.render_widget(Clear, area); // Clear background
+
+        let outer_block = Block::default()
+            .title(" Select Board ")
+            .borders(Borders::ALL)
+            .style(Style::default().bg(Color::DarkGray));
+        frame.render_widget(outer_block.clone(), area);
+
+        let chunks = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(3), // Input area
+        ])
+        .margin(1)
+        .split(area);
+
+        // List of boards
+        let items: Vec<ListItem> = self
+            .available_boards
+            .iter()
+            .map(|b| {
+                let style = if b.id == self.current_board_id {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("{} (ID: {})", b.name, b.id)).style(style)
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::BOTTOM).title("Available"))
+            .highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+            .highlight_symbol(">> ");
+
+        frame.render_stateful_widget(list, chunks[0], &mut self.board_list_state);
+
+        // Input for new board
+        let input_text = vec![
+            Line::from("Type name & Press 'Ctrl+N' to create new."),
+            Line::from(Span::styled(
+                format!("New Name: {}", self.new_board_input),
+                Style::default().fg(Color::Yellow),
+            )),
+        ];
+        let input = Paragraph::new(input_text).block(Block::default().borders(Borders::NONE));
+        frame.render_widget(input, chunks[1]);
     }
 
     /// Draws the content of the inspector panel
     fn draw_inspector(&self, frame: &mut Frame, area: Rect) {
         let mut text = Vec::new();
+
         if let Some(selected_id) = self.selected_shape_id {
             if let Some(shape) = self.shapes.get(&selected_id) {
                 text.push(Line::from(Span::styled(
@@ -599,6 +827,7 @@ impl App {
                         ShapeKind::Rectangle => "Rectangle",
                     }
                 )));
+
                 text.push(Line::from("Label:"));
                 if self.mode == Mode::Editing {
                     // Show text buffer with a "cursor"
@@ -610,6 +839,7 @@ impl App {
                     text.push(Line::from(format!("> {}", shape.label)));
                     text.push(Line::from("(Press 'i' to edit)"));
                 }
+
                 text.push(Line::from(""));
                 text.push(Line::from("Dims:"));
                 text.push(Line::from(format!(
@@ -622,6 +852,7 @@ impl App {
         } else {
             text.push(Line::from("Select a shape to inspect it."));
         }
+
         frame.render_widget(
             Paragraph::new(text).block(Block::default().title("Inspector").borders(Borders::ALL)),
             area,
@@ -632,10 +863,13 @@ impl App {
     fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
         let (world_x, world_y) =
             self.terminal_to_world_coords(self.mouse_cursor_pos.0, self.mouse_cursor_pos.1);
+
         let mode_str = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Editing => "EDITING",
+            Mode::BoardMenu => "BOARDS", // ‼️ Added status for board mode
         };
+
         let status_spans = Line::from(vec![
             Span::styled(format!(" {} ", mode_str), Style::new().bg(Color::Red)),
             Span::raw(format!(
@@ -643,6 +877,7 @@ impl App {
                 self.mouse_cursor_pos.0, self.mouse_cursor_pos.1, world_x, world_y, self.status_msg
             )),
         ]);
+
         frame.render_widget(Paragraph::new(status_spans), area);
     }
 
@@ -673,6 +908,7 @@ impl App {
         for (id, shape) in &self.shapes {
             let mut color = shape.color;
             let is_selected = self.selected_shape_id == Some(*id);
+
             if is_selected {
                 color = Color::Blue;
             }
@@ -694,6 +930,7 @@ impl App {
                 // Draw small squares at corners
                 let handle_size = 2.0; // 2 world units wide
                 let half = handle_size / 2.0;
+
                 // BL, BR, TL, TR
                 let corners = vec![
                     (shape.rect.x, shape.rect.y),                     // BL
@@ -775,6 +1012,56 @@ impl App {
                 }
                 _ => {}
             }
+        } else if self.mode == Mode::BoardMenu {
+            // ‼️ Board Menu Input Handling
+            match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Down => {
+                    if let Some(i) = self.board_list_state.selected() {
+                        if i < self.available_boards.len() - 1 {
+                            self.board_list_state.select(Some(i + 1));
+                        }
+                    }
+                }
+                KeyCode::Up => {
+                    if let Some(i) = self.board_list_state.selected() {
+                        if i > 0 {
+                            self.board_list_state.select(Some(i - 1));
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    // Select the highlighted board
+                    if let Some(i) = self.board_list_state.selected() {
+                        if let Some(board) = self.available_boards.get(i) {
+                            let board_id = board.id;
+                            // Save current before switching? Optional, but good practice.
+                            // self.save_state().await;
+
+                            self.current_board_id = board_id;
+                            self.current_board_name = board.name.clone();
+                            self.load_state().await;
+                            self.mode = Mode::Normal;
+                        }
+                    }
+                }
+                KeyCode::Char('n') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    // Create new board from buffer
+                    let name = self.new_board_input.clone();
+                    if !name.is_empty() {
+                        self.create_board(&name).await;
+                        self.new_board_input.clear();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    // Typing into new board input
+                    self.new_board_input.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.new_board_input.pop();
+                }
+                _ => {}
+            }
         } else {
             // --- Normal Mode Input ---
             match key.code {
@@ -784,6 +1071,11 @@ impl App {
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_state().await,
                 KeyCode::Char('o') | KeyCode::Char('O') => self.load_state().await,
+                // ‼️ Trigger Board Mode
+                KeyCode::Char('b') | KeyCode::Char('B') => {
+                    self.refresh_board_list().await;
+                    self.mode = Mode::BoardMenu;
+                }
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     if self.selected_shape_id.is_some() {
                         self.mode = Mode::Editing;
@@ -811,6 +1103,11 @@ impl App {
 
     /// Handle mouse events
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
+        // ‼️ Ignore canvas mouse events if in board menu
+        if self.mode == Mode::BoardMenu {
+            return;
+        }
+
         // Update mouse position
         self.mouse_cursor_pos = (mouse.column, mouse.row);
 
@@ -831,6 +1128,7 @@ impl App {
             // --- Mouse Press ---
             MouseEventKind::Down(button) => {
                 let hovered_id = self.get_shape_at(world_x, world_y);
+
                 match button {
                     event::MouseButton::Left => match self.active_tool {
                         Tool::Pointer => {
@@ -1009,6 +1307,23 @@ impl App {
             .map(|(id, _)| *id)
             .last()
     }
+}
+
+// ‼️ Helper to center a rect (e.g. for the board menu)
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(r);
+
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(popup_layout[1])[1]
 }
 
 // --- TUI Boilerplate ---
