@@ -85,7 +85,7 @@ enum Mode {
     Editing,
 }
 
-// ‼️ Added to identify which corner we are pulling
+
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum ResizeHandle {
     TopLeft,
@@ -124,7 +124,7 @@ impl WhiteboardShape {
         self.rect.y += dy;
     }
 
-    // ‼️ Added: Logic to resize based on dragging a specific handle to a new world position
+
     fn resize(&mut self, handle: ResizeHandle, target_x: f64, target_y: f64) {
         match handle {
             ResizeHandle::TopRight => {
@@ -198,7 +198,7 @@ impl WhiteboardShape {
         let top = self.rect.y + self.rect.height;
 
         // Helper to check distance
-        // ‼️ FIX: Added : f64 type annotations to px and py
+
         let is_near = |px: f64, py: f64| (x - px).abs() < threshold && (y - py).abs() < threshold;
 
         if is_near(left, top) {
@@ -234,7 +234,7 @@ struct App {
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
 
-    // ‼️ Added: Track resize state
+
     resizing_handle: Option<ResizeHandle>,
     is_resizing: bool,
 
@@ -272,8 +272,8 @@ impl Default for App {
             mode: Mode::Normal,
             dragged_shape_id: None,
             selected_shape_id: None,
-            resizing_handle: None, // ‼️ Init
-            is_resizing: false,    // ‼️ Init
+            resizing_handle: None,
+            is_resizing: false,
             label_edit_buffer: String::new(),
             connect_start_id: None,
             next_id: 0,
@@ -394,7 +394,7 @@ impl App {
                     text.push(Line::from("(Press 'i' to edit)"));
                 }
                 text.push(Line::from(""));
-                text.push(Line::from("Dims:")); // ‼️ Added Info
+                text.push(Line::from("Dims:"));
                 text.push(Line::from(format!(
                     "W: {:.1} H: {:.1}",
                     shape.rect.width, shape.rect.height
@@ -467,7 +467,7 @@ impl App {
                 }
             }
 
-            // ‼️ Added: Draw resize handles if selected
+
             if is_selected {
                 // Draw small squares at corners
                 let handle_size = 2.0; // 2 world units wide
@@ -612,7 +612,7 @@ impl App {
                 match button {
                     event::MouseButton::Left => match self.active_tool {
                         Tool::Pointer => {
-                            // ‼️ Added: Check for handle click first on currently selected shape
+
                             let mut handle_hit = None;
                             if let Some(sel_id) = self.selected_shape_id {
                                 if let Some(shape) = self.shapes.get(&sel_id) {
@@ -682,7 +682,7 @@ impl App {
             MouseEventKind::Drag(button) => {
                 match button {
                     event::MouseButton::Left => {
-                        // ‼️ Added: Resizing Logic
+
                         if self.is_resizing {
                             if let (Some(id), Some(handle)) =
                                 (self.selected_shape_id, self.resizing_handle)
@@ -735,7 +735,7 @@ impl App {
                     self.is_dragging = false;
                     self.dragged_shape_id = None;
                     self.drag_start_pos = None;
-                    // ‼️ Added: Reset resizing state
+
                     self.is_resizing = false;
                     self.resizing_handle = None;
                 }
@@ -836,4 +836,3 @@ impl Tui {
         Ok(())
     }
 }
-
