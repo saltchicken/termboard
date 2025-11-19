@@ -85,7 +85,6 @@ enum Mode {
     Editing,
 }
 
-
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum ResizeHandle {
     TopLeft,
@@ -118,12 +117,43 @@ impl WhiteboardShape {
         )
     }
 
+    fn get_boundary_point(&self, target: (f64, f64)) -> (f64, f64) {
+        let (cx, cy) = self.center();
+        let (tx, ty) = target;
+        let dx = tx - cx;
+        let dy = ty - cy;
+
+        // If centers are identical, just return center
+        if dx == 0.0 && dy == 0.0 {
+            return (cx, cy);
+        }
+
+        let half_w = self.rect.width / 2.0;
+        let half_h = self.rect.height / 2.0;
+
+        // Determine how much we need to scale the vector (dx, dy) to hit the nearest edge.
+        // We want the smallest scale factor that hits a boundary (width or height).
+        let scale_x = if dx == 0.0 {
+            f64::INFINITY
+        } else {
+            half_w / dx.abs()
+        };
+        let scale_y = if dy == 0.0 {
+            f64::INFINITY
+        } else {
+            half_h / dy.abs()
+        };
+
+        let scale = scale_x.min(scale_y);
+
+        (cx + dx * scale, cy + dy * scale)
+    }
+
     /// Moves the shape by a delta
     fn translate(&mut self, dx: f64, dy: f64) {
         self.rect.x += dx;
         self.rect.y += dy;
     }
-
 
     fn resize(&mut self, handle: ResizeHandle, target_x: f64, target_y: f64) {
         match handle {
@@ -233,7 +263,6 @@ struct App {
     dragged_shape_id: Option<u64>,
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
-
 
     resizing_handle: Option<ResizeHandle>,
     is_resizing: bool,
@@ -435,16 +464,24 @@ impl App {
         // --- Draw Connections ---
         for conn in &self.connections {
             if let (Some(a), Some(b)) = (self.shapes.get(&conn.id_a), self.shapes.get(&conn.id_b)) {
+                // ‼️ CHANGED: Calculate intersection points on the borders
+                let center_a = a.center();
+                let center_b = b.center();
+
+                // Find point on A's border looking at B
+                let (x1, y1) = a.get_boundary_point(center_b);
+                // Find point on B's border looking at A
+                let (x2, y2) = b.get_boundary_point(center_a);
+
                 ctx.draw(&CanvasLine {
-                    x1: a.center().0,
-                    y1: a.center().1,
-                    x2: b.center().0,
-                    y2: b.center().1,
+                    x1, // ‼️ was: a.center().0
+                    y1, // ‼️ was: a.center().1
+                    x2, // ‼️ was: b.center().0
+                    y2, // ‼️ was: b.center().1
                     color: Color::DarkGray,
                 });
             }
         }
-
         // --- Draw Shapes ---
         for (id, shape) in &self.shapes {
             let mut color = shape.color;
@@ -466,7 +503,6 @@ impl App {
                     });
                 }
             }
-
 
             if is_selected {
                 // Draw small squares at corners
@@ -612,7 +648,6 @@ impl App {
                 match button {
                     event::MouseButton::Left => match self.active_tool {
                         Tool::Pointer => {
-
                             let mut handle_hit = None;
                             if let Some(sel_id) = self.selected_shape_id {
                                 if let Some(shape) = self.shapes.get(&sel_id) {
@@ -682,7 +717,6 @@ impl App {
             MouseEventKind::Drag(button) => {
                 match button {
                     event::MouseButton::Left => {
-
                         if self.is_resizing {
                             if let (Some(id), Some(handle)) =
                                 (self.selected_shape_id, self.resizing_handle)
