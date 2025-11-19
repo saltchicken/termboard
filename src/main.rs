@@ -85,6 +85,15 @@ enum Mode {
     Editing,
 }
 
+// ‼️ Added to identify which corner we are pulling
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum ResizeHandle {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
 #[derive(Clone, Copy)]
 enum ShapeKind {
     Rectangle,
@@ -115,6 +124,58 @@ impl WhiteboardShape {
         self.rect.y += dy;
     }
 
+    // ‼️ Added: Logic to resize based on dragging a specific handle to a new world position
+    fn resize(&mut self, handle: ResizeHandle, target_x: f64, target_y: f64) {
+        match handle {
+            ResizeHandle::TopRight => {
+                // x unchanged, y unchanged (bottom-left anchor), width/height changes
+                // Visually Top-Right is World (x+w, y+h)
+                let new_width = (target_x - self.rect.x).max(1.0);
+                let new_height = (target_y - self.rect.y).max(1.0);
+                self.rect.width = new_width;
+                self.rect.height = new_height;
+            }
+            ResizeHandle::BottomRight => {
+                // Visually Bottom-Right is World (x+w, y)
+                // x unchanged, top (y+h) anchor unchanged.
+                // Wait, y is bottom. dragging bottom right changes width and y.
+                let new_width = (target_x - self.rect.x).max(1.0);
+                let old_top = self.rect.y + self.rect.height;
+                let new_height = (old_top - target_y).max(1.0);
+
+                self.rect.width = new_width;
+                self.rect.y = target_y; // moving bottom edge
+                self.rect.height = new_height;
+            }
+            ResizeHandle::BottomLeft => {
+                // Visually Bottom-Left is World (x, y)
+                // Changing x and y (both min values)
+                let old_right = self.rect.x + self.rect.width;
+                let old_top = self.rect.y + self.rect.height;
+
+                let new_width = (old_right - target_x).max(1.0);
+                let new_height = (old_top - target_y).max(1.0);
+
+                self.rect.x = target_x;
+                self.rect.y = target_y;
+                self.rect.width = new_width;
+                self.rect.height = new_height;
+            }
+            ResizeHandle::TopLeft => {
+                // Visually Top-Left is World (x, y+h)
+                // Changing x (left) and height (top). y (bottom) is anchor.
+                let old_right = self.rect.x + self.rect.width;
+
+                let new_width = (old_right - target_x).max(1.0);
+                let new_height = (target_y - self.rect.y).max(1.0);
+
+                self.rect.x = target_x;
+                self.rect.width = new_width;
+                self.rect.height = new_height;
+            }
+        }
+    }
+
     /// Checks if a world coordinate (x, y) is inside this shape
     fn contains(&self, x: f64, y: f64) -> bool {
         match self.kind {
@@ -124,8 +185,37 @@ impl WhiteboardShape {
             }
         }
     }
-}
 
+    fn get_handle_collision(&self, x: f64, y: f64, threshold: f64) -> Option<ResizeHandle> {
+        // World Coords: Y is UP.
+        // BL = (x, y)
+        // BR = (x+w, y)
+        // TL = (x, y+h)
+        // TR = (x+w, y+h)
+        let left = self.rect.x;
+        let right = self.rect.x + self.rect.width;
+        let bottom = self.rect.y;
+        let top = self.rect.y + self.rect.height;
+
+        // Helper to check distance
+        // ‼️ FIX: Added : f64 type annotations to px and py
+        let is_near = |px: f64, py: f64| (x - px).abs() < threshold && (y - py).abs() < threshold;
+
+        if is_near(left, top) {
+            return Some(ResizeHandle::TopLeft);
+        }
+        if is_near(right, top) {
+            return Some(ResizeHandle::TopRight);
+        }
+        if is_near(left, bottom) {
+            return Some(ResizeHandle::BottomLeft);
+        }
+        if is_near(right, bottom) {
+            return Some(ResizeHandle::BottomRight);
+        }
+        None
+    }
+}
 /// Represents a connection between two shapes, identified by their IDs.
 struct Connection {
     id_a: u64,
@@ -138,25 +228,36 @@ struct App {
     connections: Vec<Connection>,
     active_tool: Tool,
     mode: Mode,
+
     /// ID of the shape currently being dragged.
     dragged_shape_id: Option<u64>,
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
+
+    // ‼️ Added: Track resize state
+    resizing_handle: Option<ResizeHandle>,
+    is_resizing: bool,
+
     label_edit_buffer: String,
     connect_start_id: Option<u64>,
+
     next_id: u64,
+
     /// Pan offset (top-left corner of the view in world coords)
     pan_offset: (f64, f64),
     /// View dimensions in world coords
     view_size: (f64, f64),
+
     /// The Rect of the terminal area allocated to the canvas
     canvas_area: Rect,
+
     /// The last known mouse position (in terminal cells)
     mouse_cursor_pos: (u16, u16),
     /// Start position of a pan (in terminal cells)
     pan_start_pos: Option<(u16, u16)>,
     /// Start position of a drag (in world coords)
     drag_start_pos: Option<(f64, f64)>,
+
     is_panning: bool,
     is_dragging: bool,
     should_quit: bool,
@@ -171,6 +272,8 @@ impl Default for App {
             mode: Mode::Normal,
             dragged_shape_id: None,
             selected_shape_id: None,
+            resizing_handle: None, // ‼️ Init
+            is_resizing: false,    // ‼️ Init
             label_edit_buffer: String::new(),
             connect_start_id: None,
             next_id: 0,
@@ -241,7 +344,6 @@ impl App {
             ),
             Span::raw(" | (I)nspect/Edit | (Q)uit"),
         ]);
-
         frame.render_widget(Paragraph::new(toolbar_spans), main_chunks[0]);
 
         // --- 2. Canvas ---
@@ -255,7 +357,6 @@ impl App {
             .paint(|ctx| {
                 self.draw_on_canvas(ctx);
             });
-
         frame.render_widget(canvas, self.canvas_area);
 
         // --- 3. Inspector Panel ---
@@ -282,7 +383,6 @@ impl App {
                     }
                 )));
                 text.push(Line::from("Label:"));
-
                 if self.mode == Mode::Editing {
                     // Show text buffer with a "cursor"
                     text.push(Line::from(Span::styled(
@@ -293,6 +393,12 @@ impl App {
                     text.push(Line::from(format!("> {}", shape.label)));
                     text.push(Line::from("(Press 'i' to edit)"));
                 }
+                text.push(Line::from(""));
+                text.push(Line::from("Dims:")); // ‼️ Added Info
+                text.push(Line::from(format!(
+                    "W: {:.1} H: {:.1}",
+                    shape.rect.width, shape.rect.height
+                )));
                 text.push(Line::from(""));
                 text.push(Line::from("(Del) to delete"));
             }
@@ -342,7 +448,9 @@ impl App {
         // --- Draw Shapes ---
         for (id, shape) in &self.shapes {
             let mut color = shape.color;
-            if self.selected_shape_id == Some(*id) {
+            let is_selected = self.selected_shape_id == Some(*id);
+
+            if is_selected {
                 color = Color::Blue;
             }
             if self.connect_start_id == Some(*id) {
@@ -355,6 +463,34 @@ impl App {
                     ctx.draw(&Rectangle {
                         color,
                         ..shape.rect
+                    });
+                }
+            }
+
+            // ‼️ Added: Draw resize handles if selected
+            if is_selected {
+                // Draw small squares at corners
+                let handle_size = 2.0; // 2 world units wide
+                let half = handle_size / 2.0;
+
+                // BL, BR, TL, TR
+                let corners = vec![
+                    (shape.rect.x, shape.rect.y),                     // BL
+                    (shape.rect.x + shape.rect.width, shape.rect.y),  // BR
+                    (shape.rect.x, shape.rect.y + shape.rect.height), // TL
+                    (
+                        shape.rect.x + shape.rect.width,
+                        shape.rect.y + shape.rect.height,
+                    ), // TR
+                ];
+
+                for (cx, cy) in corners {
+                    ctx.draw(&Rectangle {
+                        x: cx - half,
+                        y: cy - half,
+                        width: handle_size,
+                        height: handle_size,
+                        color: Color::White,
                     });
                 }
             }
@@ -374,6 +510,7 @@ impl App {
         // Convert mouse cell pos to world coords
         let (world_x, world_y) =
             self.terminal_to_world_coords(self.mouse_cursor_pos.0, self.mouse_cursor_pos.1);
+
         // Draw a small crosshair
         ctx.draw(&CanvasLine {
             x1: world_x - 1.0,
@@ -471,14 +608,36 @@ impl App {
             // --- Mouse Press ---
             MouseEventKind::Down(button) => {
                 let hovered_id = self.get_shape_at(world_x, world_y);
+
                 match button {
                     event::MouseButton::Left => match self.active_tool {
                         Tool::Pointer => {
-                            self.selected_shape_id = hovered_id;
-                            if let Some(id) = hovered_id {
-                                self.is_dragging = true;
-                                self.dragged_shape_id = Some(id);
-                                self.drag_start_pos = Some((world_x, world_y));
+                            // ‼️ Added: Check for handle click first on currently selected shape
+                            let mut handle_hit = None;
+                            if let Some(sel_id) = self.selected_shape_id {
+                                if let Some(shape) = self.shapes.get(&sel_id) {
+                                    // Tolerance: 2.0 world units
+                                    if let Some(handle) =
+                                        shape.get_handle_collision(world_x, world_y, 2.0)
+                                    {
+                                        handle_hit = Some(handle);
+                                    }
+                                }
+                            }
+
+                            if let Some(handle) = handle_hit {
+                                // We clicked a resize handle!
+                                self.is_resizing = true;
+                                self.resizing_handle = Some(handle);
+                                // Keep selected_shape_id as is
+                            } else {
+                                // Normal selection logic
+                                self.selected_shape_id = hovered_id;
+                                if let Some(id) = hovered_id {
+                                    self.is_dragging = true;
+                                    self.dragged_shape_id = Some(id);
+                                    self.drag_start_pos = Some((world_x, world_y));
+                                }
                             }
                         }
                         Tool::DrawRect => {
@@ -523,7 +682,16 @@ impl App {
             MouseEventKind::Drag(button) => {
                 match button {
                     event::MouseButton::Left => {
-                        if self.is_dragging {
+                        // ‼️ Added: Resizing Logic
+                        if self.is_resizing {
+                            if let (Some(id), Some(handle)) =
+                                (self.selected_shape_id, self.resizing_handle)
+                            {
+                                if let Some(shape) = self.shapes.get_mut(&id) {
+                                    shape.resize(handle, world_x, world_y);
+                                }
+                            }
+                        } else if self.is_dragging {
                             if let (Some(id), Some(start_pos)) =
                                 (self.dragged_shape_id, self.drag_start_pos)
                             {
@@ -551,7 +719,7 @@ impl App {
 
                                 // Pan by subtracting delta (inverted Y)
                                 self.pan_offset.0 -= dx_world;
-                                self.pan_offset.1 += dy_world; // Y is inverted
+                                self.pan_offset.1 += dy_world; // Y is inverted in loop but consistent here
                                                                // Reset start pos for next drag event
                                 self.pan_start_pos = Some((mouse.column, mouse.row));
                             }
@@ -567,6 +735,9 @@ impl App {
                     self.is_dragging = false;
                     self.dragged_shape_id = None;
                     self.drag_start_pos = None;
+                    // ‼️ Added: Reset resizing state
+                    self.is_resizing = false;
+                    self.resizing_handle = None;
                 }
                 event::MouseButton::Middle => {
                     self.is_panning = false;
@@ -594,11 +765,9 @@ impl App {
             return (0.0, 0.0);
         }
 
-
         // The drawing area is 1 cell inward from the layout chunk
         let inner_x = self.canvas_area.x + 1;
         let inner_y = self.canvas_area.y + 1;
-
         let inner_width = self.canvas_area.width.saturating_sub(2).max(1);
         let inner_height = self.canvas_area.height.saturating_sub(2).max(1);
 
@@ -645,6 +814,7 @@ impl Tui {
 
         // Clear screen
         terminal.clear()?;
+
         Ok(Self { terminal })
     }
 
@@ -666,3 +836,4 @@ impl Tui {
         Ok(())
     }
 }
+
