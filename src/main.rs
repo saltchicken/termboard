@@ -2,8 +2,12 @@ mod config;
 use crate::config::setup_config;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, MouseEvent,
-        MouseEventKind,
+        self,
+        Event,
+        EventStream,
+        KeyCode,
+        KeyEventKind,
+        KeyModifiers, // ‼️ Removed MouseEvent imports
     },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
@@ -34,7 +38,7 @@ async fn main() -> io::Result<()> {
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string()))?;
 
-
+    // --- Database Setup (Identical to previous) ---
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS boards (
@@ -48,7 +52,6 @@ async fn main() -> io::Result<()> {
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-
     let default_exists: bool = sqlx::query("SELECT EXISTS(SELECT 1 FROM boards)")
         .fetch_one(&pool)
         .await
@@ -61,8 +64,6 @@ async fn main() -> io::Result<()> {
             .await
             .ok();
     }
-
-    // Run Migrations (Create Tables)
 
     sqlx::query(
         r#"
@@ -83,7 +84,6 @@ async fn main() -> io::Result<()> {
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS connections (
@@ -97,6 +97,7 @@ async fn main() -> io::Result<()> {
     .execute(&pool)
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+
     let _ = sqlx::query(
         "ALTER TABLE shapes ADD COLUMN IF NOT EXISTS board_id BIGINT NOT NULL DEFAULT 1",
     )
@@ -130,7 +131,6 @@ async fn main() -> io::Result<()> {
 
     // --- App State ---
     let mut app = App::new(pool);
-
     app.refresh_board_list().await;
     app.load_state().await;
 
@@ -155,9 +155,14 @@ async fn main() -> io::Result<()> {
         // Poll for event
         if crossterm::event::poll(timeout)? {
             match event_stream.next().await {
-                Some(Ok(Event::Key(key))) => app.handle_key_event(key).await,
-                Some(Ok(Event::Mouse(mouse))) => app.handle_mouse_event(mouse),
+                Some(Ok(Event::Key(key))) => {
+                    // ‼️ Ensure we only trigger on Press to avoid some key repeat issues
+                    if key.kind == KeyEventKind::Press {
+                        app.handle_key_event(key).await;
+                    }
+                }
                 Some(Ok(Event::Resize(width, height))) => app.on_resize(width, height),
+                // ‼️ Removed Mouse event matching here
                 _ => {}
             }
         }
@@ -180,7 +185,7 @@ async fn main() -> io::Result<()> {
 enum Tool {
     #[default]
     Pointer,
-    DrawRect,
+    // ‼️ DrawRect removed (replaced by 'N' hotkey)
     Connect,
 }
 
@@ -192,13 +197,7 @@ enum Mode {
     BoardMenu,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum ResizeHandle {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
+// ‼️ Removed ResizeHandle enum (resizing is now done via Ctrl+Arrow keys)
 
 #[derive(Clone, Copy)]
 enum ShapeKind {
@@ -230,7 +229,6 @@ impl WhiteboardShape {
         let dx = tx - cx;
         let dy = ty - cy;
 
-        // If centers are identical, just return center
         if dx == 0.0 && dy == 0.0 {
             return (cx, cy);
         }
@@ -238,8 +236,6 @@ impl WhiteboardShape {
         let half_w = self.rect.width / 2.0;
         let half_h = self.rect.height / 2.0;
 
-        // Determine how much we need to scale the vector (dx, dy) to hit the nearest edge.
-        // We want the smallest scale factor that hits a boundary (width or height).
         let scale_x = if dx == 0.0 {
             f64::INFINITY
         } else {
@@ -253,65 +249,10 @@ impl WhiteboardShape {
         };
 
         let scale = scale_x.min(scale_y);
-
         (cx + dx * scale, cy + dy * scale)
     }
 
-    /// Moves the shape by a delta
-    fn translate(&mut self, dx: f64, dy: f64) {
-        self.rect.x += dx;
-        self.rect.y += dy;
-    }
-
-    fn resize(&mut self, handle: ResizeHandle, target_x: f64, target_y: f64) {
-        match handle {
-            ResizeHandle::TopRight => {
-                // x unchanged, y unchanged (bottom-left anchor), width/height changes
-                // Visually Top-Right is World (x+w, y+h)
-                let new_width = (target_x - self.rect.x).max(1.0);
-                let new_height = (target_y - self.rect.y).max(1.0);
-                self.rect.width = new_width;
-                self.rect.height = new_height;
-            }
-            ResizeHandle::BottomRight => {
-                // Visually Bottom-Right is World (x+w, y)
-                // x unchanged, top (y+h) anchor unchanged.
-                // Wait, y is bottom. dragging bottom right changes width and y.
-                let new_width = (target_x - self.rect.x).max(1.0);
-                let old_top = self.rect.y + self.rect.height;
-                let new_height = (old_top - target_y).max(1.0);
-
-                self.rect.width = new_width;
-                self.rect.y = target_y; // moving bottom edge
-                self.rect.height = new_height;
-            }
-            ResizeHandle::BottomLeft => {
-                // Visually Bottom-Left is World (x, y)
-                // Changing x and y (both min values)
-                let old_right = self.rect.x + self.rect.width;
-                let old_top = self.rect.y + self.rect.height;
-
-                let new_width = (old_right - target_x).max(1.0);
-                let new_height = (old_top - target_y).max(1.0);
-
-                self.rect.x = target_x;
-                self.rect.y = target_y;
-                self.rect.width = new_width;
-                self.rect.height = new_height;
-            }
-            ResizeHandle::TopLeft => {
-                // Visually Top-Left is World (x, y+h)
-                // Changing x (left) and height (top). y (bottom) is anchor.
-                let old_right = self.rect.x + self.rect.width;
-                let new_width = (old_right - target_x).max(1.0);
-                let new_height = (target_y - self.rect.y).max(1.0);
-
-                self.rect.x = target_x;
-                self.rect.width = new_width;
-                self.rect.height = new_height;
-            }
-        }
-    }
+    // ‼️ Removed translate/resize helper methods (direct manipulation in App is simpler for keyboard)
 
     /// Checks if a world coordinate (x, y) is inside this shape
     fn contains(&self, x: f64, y: f64) -> bool {
@@ -323,34 +264,7 @@ impl WhiteboardShape {
         }
     }
 
-    fn get_handle_collision(&self, x: f64, y: f64, threshold: f64) -> Option<ResizeHandle> {
-        // World Coords: Y is UP.
-        // BL = (x, y)
-        // BR = (x+w, y)
-        // TL = (x, y+h)
-        // TR = (x+w, y+h)
-        let left = self.rect.x;
-        let right = self.rect.x + self.rect.width;
-        let bottom = self.rect.y;
-        let top = self.rect.y + self.rect.height;
-
-        // Helper to check distance
-        let is_near = |px: f64, py: f64| (x - px).abs() < threshold && (y - py).abs() < threshold;
-
-        if is_near(left, top) {
-            return Some(ResizeHandle::TopLeft);
-        }
-        if is_near(right, top) {
-            return Some(ResizeHandle::TopRight);
-        }
-        if is_near(left, bottom) {
-            return Some(ResizeHandle::BottomLeft);
-        }
-        if is_near(right, bottom) {
-            return Some(ResizeHandle::BottomRight);
-        }
-        None
-    }
+    // ‼️ Removed get_handle_collision (no mouse handles)
 }
 
 /// Represents a connection between two shapes, identified by their IDs.
@@ -358,7 +272,6 @@ struct Connection {
     id_a: u64,
     id_b: u64,
 }
-
 
 struct BoardInfo {
     id: i64,
@@ -372,23 +285,21 @@ struct App {
     connections: Vec<Connection>,
     active_tool: Tool,
     mode: Mode,
-
-
     current_board_id: i64,
     current_board_name: String,
     available_boards: Vec<BoardInfo>,
     board_list_state: ListState,
-    new_board_input: String, // Used when creating a new board
+    new_board_input: String,
 
-    /// ID of the shape currently being dragged.
-    dragged_shape_id: Option<u64>,
+    // ‼️ NEW: Keyboard Cursor Logic
+    cursor_pos: (f64, f64),
+    move_speed: f64,
+
+    // ‼️ Removed mouse drag/pan state fields
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
-    resizing_handle: Option<ResizeHandle>,
-    is_resizing: bool,
 
     label_edit_buffer: String,
-
     connect_start_id: Option<u64>,
     next_id: u64,
 
@@ -398,14 +309,6 @@ struct App {
     view_size: (f64, f64),
     /// The Rect of the terminal area allocated to the canvas
     canvas_area: Rect,
-    /// The last known mouse position (in terminal cells)
-    mouse_cursor_pos: (u16, u16),
-    /// Start position of a pan (in terminal cells)
-    pan_start_pos: Option<(u16, u16)>,
-    /// Start position of a drag (in world coords)
-    drag_start_pos: Option<(f64, f64)>,
-    is_panning: bool,
-    is_dragging: bool,
 
     should_quit: bool,
     status_msg: String,
@@ -419,31 +322,25 @@ impl App {
             connections: Vec::new(),
             active_tool: Tool::Pointer,
             mode: Mode::Normal,
-
-
             current_board_id: 1,
             current_board_name: "Default".to_string(),
             available_boards: Vec::new(),
             board_list_state: ListState::default(),
             new_board_input: String::new(),
 
-            dragged_shape_id: None,
+            // ‼️ Initialize cursor in middle of default view
+            cursor_pos: (100.0, 50.0),
+            move_speed: 2.0,
+
             selected_shape_id: None,
-            resizing_handle: None,
-            is_resizing: false,
             label_edit_buffer: String::new(),
             connect_start_id: None,
             next_id: 0,
             pan_offset: (0.0, 0.0),
-            view_size: (200.0, 100.0), // Default 200x100 world units
+            view_size: (200.0, 100.0),
             canvas_area: Rect::default(),
-            mouse_cursor_pos: (0, 0),
-            pan_start_pos: None,
-            drag_start_pos: None,
-            is_panning: false,
-            is_dragging: false,
             should_quit: false,
-            status_msg: String::from("Ready. Press 'B' for Boards."),
+            status_msg: String::from("Ready. Use Arrows to move cursor."),
         }
     }
 
@@ -451,7 +348,6 @@ impl App {
         self.next_id += 1;
         self.next_id
     }
-
 
     async fn refresh_board_list(&mut self) {
         let rows = sqlx::query("SELECT id, name FROM boards ORDER BY id")
@@ -467,12 +363,10 @@ impl App {
             })
             .collect();
 
-        // Ensure selection index is valid
         if self.board_list_state.selected().is_none() && !self.available_boards.is_empty() {
             self.board_list_state.select(Some(0));
         }
     }
-
 
     async fn create_board(&mut self, name: &str) {
         if name.trim().is_empty() {
@@ -489,7 +383,6 @@ impl App {
                 self.current_board_id = new_id;
                 self.current_board_name = name.to_string();
                 self.refresh_board_list().await;
-                // Clear current canvas for the new board
                 self.shapes.clear();
                 self.connections.clear();
                 self.next_id = 0;
@@ -500,7 +393,6 @@ impl App {
         }
     }
 
-    /// Saves all current shapes and connections to the DB
     async fn save_state(&mut self) {
         self.status_msg = "Saving...".to_string();
         let mut tx = match self.pool.begin().await {
@@ -510,7 +402,6 @@ impl App {
                 return;
             }
         };
-
 
         let _ = sqlx::query("DELETE FROM connections WHERE board_id = $1")
             .bind(self.current_board_id)
@@ -522,16 +413,14 @@ impl App {
             .execute(&mut *tx)
             .await;
 
-        // Save Shapes
         for shape in self.shapes.values() {
             let color_str = match shape.color {
                 Color::Cyan => "Cyan",
                 Color::Red => "Red",
                 Color::Blue => "Blue",
                 Color::White => "White",
-                _ => "Gray", // Fallback
+                _ => "Gray",
             };
-
 
             let res = sqlx::query(
                 "INSERT INTO shapes (id, kind, x, y, width, height, label, color, board_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
@@ -554,9 +443,7 @@ impl App {
             }
         }
 
-        // Save Connections
         for conn in &self.connections {
-
             let res =
                 sqlx::query("INSERT INTO connections (id_a, id_b, board_id) VALUES ($1, $2, $3)")
                     .bind(conn.id_a as i64)
@@ -578,13 +465,11 @@ impl App {
         }
     }
 
-    /// Loads shapes and connections from the DB
     async fn load_state(&mut self) {
         self.status_msg = "Loading...".to_string();
         self.shapes.clear();
         self.connections.clear();
         self.next_id = 0;
-
 
         let rows = match sqlx::query("SELECT * FROM shapes WHERE board_id = $1")
             .bind(self.current_board_id)
@@ -635,7 +520,6 @@ impl App {
             self.shapes.insert(shape.id, shape);
         }
 
-
         let conn_rows = match sqlx::query("SELECT * FROM connections WHERE board_id = $1")
             .bind(self.current_board_id)
             .fetch_all(&self.pool)
@@ -657,7 +541,6 @@ impl App {
             });
         }
 
-        // Update board name for UI
         if let Ok(row) = sqlx::query("SELECT name FROM boards WHERE id = $1")
             .bind(self.current_board_id)
             .fetch_one(&self.pool)
@@ -669,10 +552,7 @@ impl App {
         self.status_msg = format!("Loaded Board: {}", self.current_board_name);
     }
 
-    /// Main draw call
     fn ui(&mut self, frame: &mut Frame) {
-        // --- Layout ---
-        // Total layout: [Toolbar] [Main Area] [Status Bar]
         let main_chunks = Layout::vertical([
             Constraint::Length(1), // Toolbar
             Constraint::Min(0),    // Main content
@@ -680,33 +560,18 @@ impl App {
         ])
         .split(frame.area());
 
-        // Split main content: [Canvas] [Inspector]
         let content_chunks = Layout::horizontal([
             Constraint::Percentage(75), // Canvas
             Constraint::Percentage(25), // Inspector
         ])
         .split(main_chunks[1]);
 
-        self.canvas_area = content_chunks[0]; // Store canvas area for coord conversion
+        self.canvas_area = content_chunks[0];
 
         // --- 1. Toolbar ---
+        // ‼️ UPDATED: Toolbar reflects keyboard controls
         let toolbar_spans = Line::from(vec![
-            Span::styled(
-                " (P)ointer ",
-                if self.active_tool == Tool::Pointer {
-                    Style::new().bg(Color::Blue)
-                } else {
-                    Style::default()
-                },
-            ),
-            Span::styled(
-                " (R)ect ",
-                if self.active_tool == Tool::DrawRect {
-                    Style::new().bg(Color::Blue)
-                } else {
-                    Style::default()
-                },
-            ),
+            Span::raw(" (N)ew Rect | (Space) Select | "),
             Span::styled(
                 " (L)ink ",
                 if self.active_tool == Tool::Connect {
@@ -715,23 +580,25 @@ impl App {
                     Style::default()
                 },
             ),
-            Span::raw(" | (I)nspect | (S)ave | (O)pen | "),
-
+            Span::raw(
+                " | (Shift+Arrows) Move Shape | (Ctrl+Arrows) Resize | (I)nspect | (S)ave | ",
+            ),
             Span::styled(
                 " (B)oards ",
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
             Span::raw("| (Q)uit"),
         ]);
-
         frame.render_widget(Paragraph::new(toolbar_spans), main_chunks[0]);
 
         // --- 2. Canvas ---
+        // ‼️ Check camera bounds before drawing
+        self.update_camera();
+
         let x_bounds = [self.pan_offset.0, self.pan_offset.0 + self.view_size.0];
         let y_bounds = [self.pan_offset.1, self.pan_offset.1 + self.view_size.1];
 
         let canvas = Canvas::default()
-
             .block(
                 Block::default()
                     .title(format!("Whiteboard: {}", self.current_board_name))
@@ -742,7 +609,6 @@ impl App {
             .paint(|ctx| {
                 self.draw_on_canvas(ctx);
             });
-
         frame.render_widget(canvas, self.canvas_area);
 
         // --- 3. Inspector Panel ---
@@ -751,31 +617,45 @@ impl App {
         // --- 4. Status Bar ---
         self.draw_status_bar(frame, main_chunks[2]);
 
-
         if self.mode == Mode::BoardMenu {
             self.draw_board_menu(frame);
         }
     }
 
+    // ‼️ NEW: Helper to keep the cursor inside the visible view
+    fn update_camera(&mut self) {
+        let margin = 10.0;
+        // Check Right
+        if self.cursor_pos.0 > (self.pan_offset.0 + self.view_size.0 - margin) {
+            self.pan_offset.0 = self.cursor_pos.0 - self.view_size.0 + margin;
+        }
+        // Check Left
+        if self.cursor_pos.0 < (self.pan_offset.0 + margin) {
+            self.pan_offset.0 = self.cursor_pos.0 - margin;
+        }
+        // Check Top
+        if self.cursor_pos.1 > (self.pan_offset.1 + self.view_size.1 - margin) {
+            self.pan_offset.1 = self.cursor_pos.1 - self.view_size.1 + margin;
+        }
+        // Check Bottom
+        if self.cursor_pos.1 < (self.pan_offset.1 + margin) {
+            self.pan_offset.1 = self.cursor_pos.1 - margin;
+        }
+    }
 
     fn draw_board_menu(&mut self, frame: &mut Frame) {
         let area = centered_rect(60, 50, frame.area());
-        frame.render_widget(Clear, area); // Clear background
-
+        frame.render_widget(Clear, area);
         let outer_block = Block::default()
             .title(" Select Board ")
             .borders(Borders::ALL)
             .style(Style::default().bg(Color::DarkGray));
         frame.render_widget(outer_block.clone(), area);
 
-        let chunks = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(3), // Input area
-        ])
-        .margin(1)
-        .split(area);
+        let chunks = Layout::vertical([Constraint::Min(0), Constraint::Length(3)])
+            .margin(1)
+            .split(area);
 
-        // List of boards
         let items: Vec<ListItem> = self
             .available_boards
             .iter()
@@ -798,7 +678,6 @@ impl App {
 
         frame.render_stateful_widget(list, chunks[0], &mut self.board_list_state);
 
-        // Input for new board
         let input_text = vec![
             Line::from("Type name & Press 'Ctrl+N' to create new."),
             Line::from(Span::styled(
@@ -810,10 +689,8 @@ impl App {
         frame.render_widget(input, chunks[1]);
     }
 
-    /// Draws the content of the inspector panel
     fn draw_inspector(&self, frame: &mut Frame, area: Rect) {
         let mut text = Vec::new();
-
         if let Some(selected_id) = self.selected_shape_id {
             if let Some(shape) = self.shapes.get(&selected_id) {
                 text.push(Line::from(Span::styled(
@@ -827,10 +704,8 @@ impl App {
                         ShapeKind::Rectangle => "Rectangle",
                     }
                 )));
-
                 text.push(Line::from("Label:"));
                 if self.mode == Mode::Editing {
-                    // Show text buffer with a "cursor"
                     text.push(Line::from(Span::styled(
                         format!("> {}_", self.label_edit_buffer),
                         Style::new().bg(Color::White).fg(Color::Black),
@@ -839,7 +714,6 @@ impl App {
                     text.push(Line::from(format!("> {}", shape.label)));
                     text.push(Line::from("(Press 'i' to edit)"));
                 }
-
                 text.push(Line::from(""));
                 text.push(Line::from("Dims:"));
                 text.push(Line::from(format!(
@@ -852,48 +726,37 @@ impl App {
         } else {
             text.push(Line::from("Select a shape to inspect it."));
         }
-
         frame.render_widget(
             Paragraph::new(text).block(Block::default().title("Inspector").borders(Borders::ALL)),
             area,
         );
     }
 
-    /// Draws the bottom status bar
     fn draw_status_bar(&self, frame: &mut Frame, area: Rect) {
-        let (world_x, world_y) =
-            self.terminal_to_world_coords(self.mouse_cursor_pos.0, self.mouse_cursor_pos.1);
-
         let mode_str = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Editing => "EDITING",
             Mode::BoardMenu => "BOARDS",
         };
-
+        // ‼️ UPDATED: Status bar shows Cursor Position
         let status_spans = Line::from(vec![
             Span::styled(format!(" {} ", mode_str), Style::new().bg(Color::Red)),
             Span::raw(format!(
-                " | Mouse: ({}, {}) | World: ({:.1}, {:.1}) | MSG: {}",
-                self.mouse_cursor_pos.0, self.mouse_cursor_pos.1, world_x, world_y, self.status_msg
+                " | Cursor: ({:.1}, {:.1}) | MSG: {}",
+                self.cursor_pos.0, self.cursor_pos.1, self.status_msg
             )),
         ]);
-
         frame.render_widget(Paragraph::new(status_spans), area);
     }
 
-    /// Main logic for drawing shapes/lines on the canvas
     fn draw_on_canvas(&self, ctx: &mut Context) {
         // --- Draw Connections ---
         for conn in &self.connections {
             if let (Some(a), Some(b)) = (self.shapes.get(&conn.id_a), self.shapes.get(&conn.id_b)) {
                 let center_a = a.center();
                 let center_b = b.center();
-
-                // Find point on A's border looking at B
                 let (x1, y1) = a.get_boundary_point(center_b);
-                // Find point on B's border looking at A
                 let (x2, y2) = b.get_boundary_point(center_a);
-
                 ctx.draw(&CanvasLine {
                     x1,
                     y1,
@@ -908,7 +771,6 @@ impl App {
         for (id, shape) in &self.shapes {
             let mut color = shape.color;
             let is_selected = self.selected_shape_id == Some(*id);
-
             if is_selected {
                 color = Color::Blue;
             }
@@ -926,33 +788,6 @@ impl App {
                 }
             }
 
-            if is_selected {
-                // Draw small squares at corners
-                let handle_size = 2.0; // 2 world units wide
-                let half = handle_size / 2.0;
-
-                // BL, BR, TL, TR
-                let corners = vec![
-                    (shape.rect.x, shape.rect.y),                     // BL
-                    (shape.rect.x + shape.rect.width, shape.rect.y),  // BR
-                    (shape.rect.x, shape.rect.y + shape.rect.height), // TL
-                    (
-                        shape.rect.x + shape.rect.width,
-                        shape.rect.y + shape.rect.height,
-                    ), // TR
-                ];
-
-                for (cx, cy) in corners {
-                    ctx.draw(&Rectangle {
-                        x: cx - half,
-                        y: cy - half,
-                        width: handle_size,
-                        height: handle_size,
-                        color: Color::White,
-                    });
-                }
-            }
-
             // Draw the label
             if !shape.label.is_empty() {
                 let x_offset = shape.label.len() as f64 / 2.0;
@@ -964,35 +799,32 @@ impl App {
             }
         }
 
-        // --- Draw Cursor ---
-        // Convert mouse cell pos to world coords
-        let (world_x, world_y) =
-            self.terminal_to_world_coords(self.mouse_cursor_pos.0, self.mouse_cursor_pos.1);
+        // ‼️ UPDATED: Draw Virtual Cursor (Crosshair)
+        let cx = self.cursor_pos.0;
+        let cy = self.cursor_pos.1;
+        let cursor_size = 2.0;
 
-        // Draw a small crosshair
         ctx.draw(&CanvasLine {
-            x1: world_x - 1.0,
-            y1: world_y,
-            x2: world_x + 1.0,
-            y2: world_y,
+            x1: cx - cursor_size,
+            y1: cy,
+            x2: cx + cursor_size,
+            y2: cy,
             color: Color::Yellow,
         });
         ctx.draw(&CanvasLine {
-            x1: world_x,
-            y1: world_y - 0.5,
-            x2: world_x,
-            y2: world_y + 0.5,
+            x1: cx,
+            y1: cy - cursor_size,
+            x2: cx,
+            y2: cy + cursor_size,
             color: Color::Yellow,
         });
     }
 
-    /// Handle key presses
+    // ‼️ MAJOR REFACTOR: Handle key events for cursor/selection/modification
     async fn handle_key_event(&mut self, key: event::KeyEvent) {
         if self.mode == Mode::Editing {
-            // --- Editing Mode Input ---
             match key.code {
                 KeyCode::Enter => {
-                    // Save buffer to shape and exit editing mode
                     if let Some(id) = self.selected_shape_id {
                         if let Some(shape) = self.shapes.get_mut(&id) {
                             shape.label = self.label_edit_buffer.clone();
@@ -1000,10 +832,7 @@ impl App {
                     }
                     self.mode = Mode::Normal;
                 }
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    // Discard changes by not saving buffer
-                }
+                KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Char(c) => {
                     self.label_edit_buffer.push(c);
                 }
@@ -1013,17 +842,16 @@ impl App {
                 _ => {}
             }
         } else if self.mode == Mode::BoardMenu {
-
             match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     if let Some(i) = self.board_list_state.selected() {
-                        if i < self.available_boards.len() - 1 {
+                        if i < self.available_boards.len().saturating_sub(1) {
                             self.board_list_state.select(Some(i + 1));
                         }
                     }
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     if let Some(i) = self.board_list_state.selected() {
                         if i > 0 {
                             self.board_list_state.select(Some(i - 1));
@@ -1031,13 +859,9 @@ impl App {
                     }
                 }
                 KeyCode::Enter => {
-                    // Select the highlighted board
                     if let Some(i) = self.board_list_state.selected() {
                         if let Some(board) = self.available_boards.get(i) {
                             let board_id = board.id;
-                            // Save current before switching? Optional, but good practice.
-                            // self.save_state().await;
-
                             self.current_board_id = board_id;
                             self.current_board_name = board.name.clone();
                             self.load_state().await;
@@ -1046,7 +870,6 @@ impl App {
                     }
                 }
                 KeyCode::Char('n') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
-                    // Create new board from buffer
                     let name = self.new_board_input.clone();
                     if !name.is_empty() {
                         self.create_board(&name).await;
@@ -1054,7 +877,6 @@ impl App {
                     }
                 }
                 KeyCode::Char(c) => {
-                    // Typing into new board input
                     self.new_board_input.push(c);
                 }
                 KeyCode::Backspace => {
@@ -1066,12 +888,82 @@ impl App {
             // --- Normal Mode Input ---
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
-                KeyCode::Char('p') | KeyCode::Char('P') => self.active_tool = Tool::Pointer,
-                KeyCode::Char('r') | KeyCode::Char('R') => self.active_tool = Tool::DrawRect,
-                KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
+
+                // ‼️ MOVEMENT (Arrows / HJKL)
+                KeyCode::Left | KeyCode::Char('h') => self.move_left(key.modifiers),
+                KeyCode::Right | KeyCode::Char('l')
+                    if key.modifiers.is_empty()
+                        || key.modifiers.contains(KeyModifiers::SHIFT)
+                        || key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.move_right(key.modifiers)
+                }
+                KeyCode::Up | KeyCode::Char('k') => self.move_up(key.modifiers),
+                KeyCode::Down | KeyCode::Char('j') => self.move_down(key.modifiers),
+
+                // ‼️ SELECTION / ACTION
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    // Try to find shape under cursor
+                    if let Some(id) = self.get_shape_at(self.cursor_pos.0, self.cursor_pos.1) {
+                        self.selected_shape_id = Some(id);
+                        self.status_msg = format!("Selected Shape {}", id);
+
+                        // Link logic
+                        if self.active_tool == Tool::Connect {
+                            if let Some(start) = self.connect_start_id {
+                                if start != id {
+                                    self.connections.push(Connection {
+                                        id_a: start,
+                                        id_b: id,
+                                    });
+                                    self.connect_start_id = None;
+                                    self.active_tool = Tool::Pointer;
+                                    self.status_msg = "Connected!".to_string();
+                                }
+                            } else {
+                                self.connect_start_id = Some(id);
+                                self.status_msg = "Link Start... Select target.".to_string();
+                            }
+                        }
+                    } else {
+                        self.selected_shape_id = None;
+                        self.connect_start_id = None;
+                        self.status_msg = "Cleared Selection".to_string();
+                    }
+                }
+
+                // ‼️ NEW SHAPE
+                KeyCode::Char('n') | KeyCode::Char('N')
+                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    let id = self.new_id();
+                    let new_shape = WhiteboardShape {
+                        id,
+                        kind: ShapeKind::Rectangle,
+                        rect: canvas::Rectangle {
+                            x: self.cursor_pos.0 - 5.0,
+                            y: self.cursor_pos.1 - 2.5,
+                            width: 10.0,
+                            height: 5.0,
+                            color: Color::Cyan,
+                        },
+                        label: String::new(),
+                        color: Color::Cyan,
+                    };
+                    self.shapes.insert(id, new_shape);
+                    self.selected_shape_id = Some(id);
+                    self.status_msg = "Created Rectangle".to_string();
+                }
+
+                // ‼️ LINK MODE
+                KeyCode::Char('L') => {
+                    self.active_tool = Tool::Connect;
+                    self.status_msg = "Link Mode: Select Start Shape".to_string();
+                }
+
+                // General
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_state().await,
                 KeyCode::Char('o') | KeyCode::Char('O') => self.load_state().await,
-
                 KeyCode::Char('b') | KeyCode::Char('B') => {
                     self.refresh_board_list().await;
                     self.mode = Mode::BoardMenu;
@@ -1079,228 +971,101 @@ impl App {
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     if self.selected_shape_id.is_some() {
                         self.mode = Mode::Editing;
-                        // Load label into buffer
                         self.label_edit_buffer = self
                             .shapes
                             .get(&self.selected_shape_id.unwrap())
                             .map_or(String::new(), |s| s.label.clone());
                     }
                 }
-                KeyCode::Delete => {
+                KeyCode::Delete | KeyCode::Char('x') => {
                     if let Some(id) = self.selected_shape_id.take() {
                         self.shapes.remove(&id);
                         self.connections.retain(|c| c.id_a != id && c.id_b != id);
+                        self.status_msg = "Deleted Shape".to_string();
                     }
                 }
                 KeyCode::Esc => {
                     self.selected_shape_id = None;
                     self.connect_start_id = None;
+                    self.active_tool = Tool::Pointer;
                 }
                 _ => {}
             }
         }
     }
 
-    /// Handle mouse events
-    fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-
-        if self.mode == Mode::BoardMenu {
-            return;
-        }
-
-        // Update mouse position
-        self.mouse_cursor_pos = (mouse.column, mouse.row);
-
-        // Check if mouse is within the canvas area
-        if !self
-            .canvas_area
-            .contains(Position::new(mouse.column, mouse.row))
-        {
-            // Mouse is outside canvas, don't process clicks/drags
-            // We still update position for the status bar, though.
-            return;
-        }
-
-        // Convert to world coordinates
-        let (world_x, world_y) = self.terminal_to_world_coords(mouse.column, mouse.row);
-
-        match mouse.kind {
-            // --- Mouse Press ---
-            MouseEventKind::Down(button) => {
-                let hovered_id = self.get_shape_at(world_x, world_y);
-
-                match button {
-                    event::MouseButton::Left => match self.active_tool {
-                        Tool::Pointer => {
-                            let mut handle_hit = None;
-                            if let Some(sel_id) = self.selected_shape_id {
-                                if let Some(shape) = self.shapes.get(&sel_id) {
-                                    // Tolerance: 2.0 world units
-                                    if let Some(handle) =
-                                        shape.get_handle_collision(world_x, world_y, 2.0)
-                                    {
-                                        handle_hit = Some(handle);
-                                    }
-                                }
-                            }
-
-                            if let Some(handle) = handle_hit {
-                                // We clicked a resize handle!
-                                self.is_resizing = true;
-                                self.resizing_handle = Some(handle);
-                                // Keep selected_shape_id as is
-                            } else {
-                                // Normal selection logic
-                                self.selected_shape_id = hovered_id;
-                                if let Some(id) = hovered_id {
-                                    self.is_dragging = true;
-                                    self.dragged_shape_id = Some(id);
-                                    self.drag_start_pos = Some((world_x, world_y));
-                                }
-                            }
-                        }
-                        Tool::DrawRect => {
-                            let id = self.new_id();
-                            let new_shape = WhiteboardShape {
-                                id,
-                                kind: ShapeKind::Rectangle,
-                                rect: canvas::Rectangle {
-                                    x: world_x - 5.0,
-                                    y: world_y - 2.5,
-                                    width: 10.0,
-                                    height: 5.0,
-                                    color: Color::Cyan,
-                                },
-                                label: String::new(),
-                                color: Color::Cyan,
-                            };
-                            self.shapes.insert(id, new_shape);
-                        }
-                        Tool::Connect => {
-                            if let Some(id) = hovered_id {
-                                if let Some(start_id) = self.connect_start_id.take() {
-                                    self.connections.push(Connection {
-                                        id_a: start_id,
-                                        id_b: id,
-                                    });
-                                } else {
-                                    self.connect_start_id = Some(id);
-                                }
-                            }
-                        }
-                    },
-                    event::MouseButton::Middle => {
-                        self.is_panning = true;
-                        self.pan_start_pos = Some((mouse.column, mouse.row));
-                    }
-                    _ => {}
-                }
+    // ‼️ MOVEMENT HELPERS
+    // Shift = Move Shape, Ctrl = Resize Shape, None = Move Cursor
+    fn move_left(&mut self, mods: KeyModifiers) {
+        if mods.contains(KeyModifiers::SHIFT) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.x -= self.move_speed;
             }
-            // --- Mouse Drag ---
-            MouseEventKind::Drag(button) => {
-                match button {
-                    event::MouseButton::Left => {
-                        if self.is_resizing {
-                            if let (Some(id), Some(handle)) =
-                                (self.selected_shape_id, self.resizing_handle)
-                            {
-                                if let Some(shape) = self.shapes.get_mut(&id) {
-                                    shape.resize(handle, world_x, world_y);
-                                }
-                            }
-                        } else if self.is_dragging {
-                            if let (Some(id), Some(start_pos)) =
-                                (self.dragged_shape_id, self.drag_start_pos)
-                            {
-                                if let Some(shape) = self.shapes.get_mut(&id) {
-                                    let dx = world_x - start_pos.0;
-                                    let dy = world_y - start_pos.1;
-                                    shape.translate(dx, dy);
-                                    self.drag_start_pos = Some((world_x, world_y));
-                                }
-                            }
-                        }
-                    }
-                    event::MouseButton::Middle => {
-                        if self.is_panning {
-                            if let Some(start_pos) = self.pan_start_pos {
-                                // Delta in terminal cells
-                                let dx_term = mouse.column as f64 - start_pos.0 as f64;
-                                let dy_term = mouse.row as f64 - start_pos.1 as f64;
-
-                                // Convert to world delta
-                                let dx_world =
-                                    (dx_term / self.canvas_area.width as f64) * self.view_size.0;
-                                let dy_world =
-                                    (dy_term / self.canvas_area.height as f64) * self.view_size.1;
-
-                                // Pan by subtracting delta (inverted Y)
-                                self.pan_offset.0 -= dx_world;
-                                self.pan_offset.1 += dy_world; // Y is inverted in loop but consistent here
-
-                                // Reset start pos for next drag event
-                                self.pan_start_pos = Some((mouse.column, mouse.row));
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+            self.cursor_pos.0 -= self.move_speed;
+        } else if mods.contains(KeyModifiers::CONTROL) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.width = (s.rect.width - self.move_speed).max(1.0);
             }
-            // --- Mouse Release ---
-            MouseEventKind::Up(button) => match button {
-                event::MouseButton::Left => {
-                    self.is_dragging = false;
-                    self.dragged_shape_id = None;
-                    self.drag_start_pos = None;
-                    self.is_resizing = false;
-                    self.resizing_handle = None;
-                }
-                event::MouseButton::Middle => {
-                    self.is_panning = false;
-                    self.pan_start_pos = None;
-                }
-                _ => {}
-            },
-            _ => {}
+        } else {
+            self.cursor_pos.0 -= self.move_speed;
         }
     }
 
-    /// Called on terminal resize
+    fn move_right(&mut self, mods: KeyModifiers) {
+        if mods.contains(KeyModifiers::SHIFT) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.x += self.move_speed;
+            }
+            self.cursor_pos.0 += self.move_speed;
+        } else if mods.contains(KeyModifiers::CONTROL) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.width += self.move_speed;
+            }
+        } else {
+            self.cursor_pos.0 += self.move_speed;
+        }
+    }
+
+    fn move_up(&mut self, mods: KeyModifiers) {
+        if mods.contains(KeyModifiers::SHIFT) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.y += self.move_speed;
+            }
+            self.cursor_pos.1 += self.move_speed;
+        } else if mods.contains(KeyModifiers::CONTROL) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.height += self.move_speed;
+            }
+        } else {
+            self.cursor_pos.1 += self.move_speed;
+        }
+    }
+
+    fn move_down(&mut self, mods: KeyModifiers) {
+        if mods.contains(KeyModifiers::SHIFT) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.y -= self.move_speed;
+            }
+            self.cursor_pos.1 -= self.move_speed;
+        } else if mods.contains(KeyModifiers::CONTROL) && self.selected_shape_id.is_some() {
+            if let Some(s) = self.shapes.get_mut(&self.selected_shape_id.unwrap()) {
+                s.rect.height = (s.rect.height - self.move_speed).max(1.0);
+            }
+        } else {
+            self.cursor_pos.1 -= self.move_speed;
+        }
+    }
+
     fn on_resize(&mut self, _width: u16, _height: u16) {
-        // The layout will be recalculated on the next draw,
-        // which will update self.canvas_area.
+        // Layout recalculated on next draw
     }
 
-    /// Called on a regular interval
     fn on_tick(&mut self) {
-        // Future use: animations, etc.
-    }
-
-    fn terminal_to_world_coords(&self, col: u16, row: u16) -> (f64, f64) {
-        if self.canvas_area.width == 0 || self.canvas_area.height == 0 {
-            return (0.0, 0.0);
-        }
-        // The drawing area is 1 cell inward from the layout chunk
-        let inner_x = self.canvas_area.x + 1;
-        let inner_y = self.canvas_area.y + 1;
-        let inner_width = self.canvas_area.width.saturating_sub(2).max(1);
-        let inner_height = self.canvas_area.height.saturating_sub(2).max(1);
-
-        // Normalize coordinates within the canvas area (0.0 to 1.0)
-        let norm_x = (col.saturating_sub(inner_x)) as f64 / inner_width as f64;
-        let norm_y = (row.saturating_sub(inner_y)) as f64 / inner_height as f64;
-
-        // Map to world coordinates
-        // Y is inverted: 0.0 at top of terminal, 1.0 at bottom
-        let world_x = self.pan_offset.0 + norm_x * self.view_size.0;
-        let world_y = self.pan_offset.1 + (1.0 - norm_y) * self.view_size.1;
-
-        (world_x, world_y)
+        // Future animation logic
     }
 
     /// Finds the top-most shape at a given world coordinate
     fn get_shape_at(&self, x: f64, y: f64) -> Option<u64> {
-        // Iterate in reverse to get the "top-most" (last drawn)
         self.shapes
             .iter()
             .filter(|(_, shape)| shape.contains(x, y))
@@ -1308,7 +1073,6 @@ impl App {
             .last()
     }
 }
-
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::vertical([
@@ -1327,29 +1091,21 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 // --- TUI Boilerplate ---
-
-/// A simple wrapper for terminal setup and teardown
 struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
 }
 
 impl Tui {
-    /// Create a new TUI
     pub fn new() -> io::Result<Self> {
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
-
-        // Setup terminal
         enable_raw_mode()?;
         io::stdout().execute(EnterAlternateScreen)?;
-        io::stdout().execute(EnableMouseCapture)?;
-
-        // Clear screen
+        // ‼️ Removed EnableMouseCapture
         terminal.clear()?;
         Ok(Self { terminal })
     }
 
-    /// Draw a frame
     pub fn draw<F>(&mut self, f: F) -> io::Result<()>
     where
         F: FnOnce(&mut Frame),
@@ -1358,12 +1114,11 @@ impl Tui {
         Ok(())
     }
 
-    /// Restore terminal on exit
     pub fn exit(&mut self) -> io::Result<()> {
-        // Restore terminal
         disable_raw_mode()?;
         io::stdout().execute(LeaveAlternateScreen)?;
-        io::stdout().execute(DisableMouseCapture)?;
+        // ‼️ Removed DisableMouseCapture
         Ok(())
     }
 }
+
