@@ -14,11 +14,11 @@ use ratatui::{
         Block, Borders, Paragraph,
     },
 };
-// ‼️ ADDED: Imports for DB and Config
+
 use directories::ProjectDirs;
 use serde::Deserialize;
 use sqlx::postgres::{PgPool, PgPoolOptions};
-use sqlx::Row; // ‼️ ADDED: Needed for manual row mapping
+use sqlx::Row;
 use std::{
     collections::HashMap,
     fs,
@@ -26,7 +26,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-// ‼️ ADDED: Config Struct
+
 #[derive(Deserialize)]
 struct AppConfig {
     database_url: String,
@@ -35,7 +35,7 @@ struct AppConfig {
 /// We need tokio's runtime for the async event loop
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    // ‼️ ADDED: Load Config
+
     let proj_dirs = ProjectDirs::from("com", "user", "tui_whiteboard")
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Could not find home directory"))?;
     let config_path = proj_dirs.config_dir().join("config.toml");
@@ -58,7 +58,7 @@ async fn main() -> io::Result<()> {
         )
     })?;
 
-    // ‼️ ADDED: Database Setup
+
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&config.database_url)
@@ -66,7 +66,7 @@ async fn main() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string()))?;
 
     // Run Migrations (Create Tables)
-    // ‼️ CHANGED: Split into separate queries. Prepared statements do not support multiple commands in one string.
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shapes (
@@ -102,7 +102,7 @@ async fn main() -> io::Result<()> {
     let mut terminal = Tui::new()?;
 
     // --- App State ---
-    // ‼️ CHANGED: Pass the pool to the App
+
     let mut app = App::new(pool);
 
     let tick_rate = Duration::from_millis(33); // ~30 FPS
@@ -126,7 +126,7 @@ async fn main() -> io::Result<()> {
         // Poll for event
         if crossterm::event::poll(timeout)? {
             match event_stream.next().await {
-                // ‼️ CHANGED: handle_key_event is now async to allow DB calls
+
                 Some(Ok(Event::Key(key))) => app.handle_key_event(key).await,
                 Some(Ok(Event::Mouse(mouse))) => app.handle_mouse_event(mouse),
                 Some(Ok(Event::Resize(width, height))) => app.on_resize(width, height),
@@ -327,7 +327,7 @@ struct Connection {
 
 /// Holds the entire state of our application.
 struct App {
-    // ‼️ ADDED: Database Pool
+
     pool: PgPool,
     shapes: HashMap<u64, WhiteboardShape>,
     connections: Vec<Connection>,
@@ -357,12 +357,12 @@ struct App {
     is_panning: bool,
     is_dragging: bool,
     should_quit: bool,
-    // ‼️ ADDED: Status message for user feedback
+
     status_msg: String,
 }
 
 impl App {
-    // ‼️ CHANGED: Constructor now accepts pool
+
     fn new(pool: PgPool) -> Self {
         Self {
             pool,
@@ -395,7 +395,7 @@ impl App {
         self.next_id
     }
 
-    // ‼️ ADDED: Persistence Methods
+
 
     /// Saves all current shapes and connections to the DB
     async fn save_state(&mut self) {
@@ -475,7 +475,7 @@ impl App {
         self.next_id = 0;
 
         // Load Shapes
-        // ‼️ CHANGED: Switched from sqlx::query! macro to sqlx::query function to avoid compile-time DB checks
+
         let rows = match sqlx::query("SELECT * FROM shapes")
             .fetch_all(&self.pool)
             .await
@@ -488,7 +488,7 @@ impl App {
         };
 
         for row in rows {
-            // ‼️ CHANGED: Manual extraction of fields
+
             let id: i64 = row.get("id");
             let x: f64 = row.get("x");
             let y: f64 = row.get("y");
@@ -526,7 +526,7 @@ impl App {
         }
 
         // Load Connections
-        // ‼️ CHANGED: Switched from sqlx::query! macro to sqlx::query function
+
         let conn_rows = match sqlx::query("SELECT * FROM connections")
             .fetch_all(&self.pool)
             .await
@@ -539,7 +539,7 @@ impl App {
         };
 
         for row in conn_rows {
-            // ‼️ CHANGED: Manual extraction
+
             let id_a: i64 = row.get("id_a");
             let id_b: i64 = row.get("id_b");
             self.connections.push(Connection {
@@ -560,7 +560,7 @@ impl App {
             Constraint::Min(0),    // Main content
             Constraint::Length(1), // Status Bar
         ])
-        // ‼️ CHANGED: Fixed deprecation warning, changed .size() to .area()
+
         .split(frame.area());
 
         // Split main content: [Canvas] [Inspector]
@@ -598,7 +598,7 @@ impl App {
                     Style::default()
                 },
             ),
-            // ‼️ CHANGED: Updated Toolbar text
+
             Span::raw(" | (I)nspect/Edit | (S)ave | (O)pen/Load | (Q)uit"),
         ]);
 
@@ -683,7 +683,7 @@ impl App {
             Mode::Editing => "EDITING",
         };
 
-        // ‼️ CHANGED: Added status_msg to status bar
+
         let status_spans = Line::from(vec![
             Span::styled(format!(" {} ", mode_str), Style::new().bg(Color::Red)),
             Span::raw(format!(
@@ -798,7 +798,7 @@ impl App {
     }
 
     /// Handle key presses
-    // ‼️ CHANGED: Now async to allow database await
+
     async fn handle_key_event(&mut self, key: event::KeyEvent) {
         if self.mode == Mode::Editing {
             // --- Editing Mode Input ---
@@ -831,7 +831,7 @@ impl App {
                 KeyCode::Char('p') | KeyCode::Char('P') => self.active_tool = Tool::Pointer,
                 KeyCode::Char('r') | KeyCode::Char('R') => self.active_tool = Tool::DrawRect,
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
-                // ‼️ ADDED: Save and Load inputs
+
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_state().await,
                 KeyCode::Char('o') | KeyCode::Char('O') => self.load_state().await,
                 KeyCode::Char('i') | KeyCode::Char('I') => {
