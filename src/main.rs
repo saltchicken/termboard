@@ -34,7 +34,7 @@ async fn main() -> io::Result<()> {
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string()))?;
 
-    // ‼️ Create Boards Table
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS boards (
@@ -48,7 +48,7 @@ async fn main() -> io::Result<()> {
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    // ‼️ Create default board if none exists
+
     let default_exists: bool = sqlx::query("SELECT EXISTS(SELECT 1 FROM boards)")
         .fetch_one(&pool)
         .await
@@ -63,7 +63,7 @@ async fn main() -> io::Result<()> {
     }
 
     // Run Migrations (Create Tables)
-    // ‼️ Added board_id column
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shapes (
@@ -83,7 +83,7 @@ async fn main() -> io::Result<()> {
     .await
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-    // ‼️ Added board_id to connections for easier cleanup
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS connections (
@@ -130,7 +130,7 @@ async fn main() -> io::Result<()> {
 
     // --- App State ---
     let mut app = App::new(pool);
-    // ‼️ Load the initial board list and state
+
     app.refresh_board_list().await;
     app.load_state().await;
 
@@ -189,7 +189,7 @@ enum Mode {
     #[default]
     Normal,
     Editing,
-    BoardMenu, // ‼️ New Mode for selecting boards
+    BoardMenu,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -359,7 +359,7 @@ struct Connection {
     id_b: u64,
 }
 
-// ‼️ Simple struct for Board List
+
 struct BoardInfo {
     id: i64,
     name: String,
@@ -373,7 +373,7 @@ struct App {
     active_tool: Tool,
     mode: Mode,
 
-    // ‼️ Board Management State
+
     current_board_id: i64,
     current_board_name: String,
     available_boards: Vec<BoardInfo>,
@@ -420,7 +420,7 @@ impl App {
             active_tool: Tool::Pointer,
             mode: Mode::Normal,
 
-            // ‼️ Initialize Board defaults
+
             current_board_id: 1,
             current_board_name: "Default".to_string(),
             available_boards: Vec::new(),
@@ -452,7 +452,7 @@ impl App {
         self.next_id
     }
 
-    // ‼️ Fetch list of boards from DB
+
     async fn refresh_board_list(&mut self) {
         let rows = sqlx::query("SELECT id, name FROM boards ORDER BY id")
             .fetch_all(&self.pool)
@@ -473,7 +473,7 @@ impl App {
         }
     }
 
-    // ‼️ Create a new board
+
     async fn create_board(&mut self, name: &str) {
         if name.trim().is_empty() {
             return;
@@ -511,7 +511,7 @@ impl App {
             }
         };
 
-        // ‼️ Modified to only delete items for CURRENT board
+
         let _ = sqlx::query("DELETE FROM connections WHERE board_id = $1")
             .bind(self.current_board_id)
             .execute(&mut *tx)
@@ -532,7 +532,7 @@ impl App {
                 _ => "Gray", // Fallback
             };
 
-            // ‼️ Added board_id to INSERT
+
             let res = sqlx::query(
                 "INSERT INTO shapes (id, kind, x, y, width, height, label, color, board_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
             )
@@ -556,7 +556,7 @@ impl App {
 
         // Save Connections
         for conn in &self.connections {
-            // ‼️ Added board_id to INSERT
+
             let res =
                 sqlx::query("INSERT INTO connections (id_a, id_b, board_id) VALUES ($1, $2, $3)")
                     .bind(conn.id_a as i64)
@@ -585,7 +585,7 @@ impl App {
         self.connections.clear();
         self.next_id = 0;
 
-        // ‼️ Added filtering by board_id
+
         let rows = match sqlx::query("SELECT * FROM shapes WHERE board_id = $1")
             .bind(self.current_board_id)
             .fetch_all(&self.pool)
@@ -635,7 +635,7 @@ impl App {
             self.shapes.insert(shape.id, shape);
         }
 
-        // ‼️ Added filtering by board_id
+
         let conn_rows = match sqlx::query("SELECT * FROM connections WHERE board_id = $1")
             .bind(self.current_board_id)
             .fetch_all(&self.pool)
@@ -716,7 +716,7 @@ impl App {
                 },
             ),
             Span::raw(" | (I)nspect | (S)ave | (O)pen | "),
-            // ‼️ Added Board menu hint
+
             Span::styled(
                 " (B)oards ",
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
@@ -731,7 +731,7 @@ impl App {
         let y_bounds = [self.pan_offset.1, self.pan_offset.1 + self.view_size.1];
 
         let canvas = Canvas::default()
-            // ‼️ Show current board name in title
+
             .block(
                 Block::default()
                     .title(format!("Whiteboard: {}", self.current_board_name))
@@ -751,13 +751,13 @@ impl App {
         // --- 4. Status Bar ---
         self.draw_status_bar(frame, main_chunks[2]);
 
-        // ‼️ Render Board Menu Overlay if active
+
         if self.mode == Mode::BoardMenu {
             self.draw_board_menu(frame);
         }
     }
 
-    // ‼️ New Function to draw the Board Selection Menu
+
     fn draw_board_menu(&mut self, frame: &mut Frame) {
         let area = centered_rect(60, 50, frame.area());
         frame.render_widget(Clear, area); // Clear background
@@ -867,7 +867,7 @@ impl App {
         let mode_str = match self.mode {
             Mode::Normal => "NORMAL",
             Mode::Editing => "EDITING",
-            Mode::BoardMenu => "BOARDS", // ‼️ Added status for board mode
+            Mode::BoardMenu => "BOARDS",
         };
 
         let status_spans = Line::from(vec![
@@ -1013,7 +1013,7 @@ impl App {
                 _ => {}
             }
         } else if self.mode == Mode::BoardMenu {
-            // ‼️ Board Menu Input Handling
+
             match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Down => {
@@ -1071,7 +1071,7 @@ impl App {
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_state().await,
                 KeyCode::Char('o') | KeyCode::Char('O') => self.load_state().await,
-                // ‼️ Trigger Board Mode
+
                 KeyCode::Char('b') | KeyCode::Char('B') => {
                     self.refresh_board_list().await;
                     self.mode = Mode::BoardMenu;
@@ -1103,7 +1103,7 @@ impl App {
 
     /// Handle mouse events
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
-        // ‼️ Ignore canvas mouse events if in board menu
+
         if self.mode == Mode::BoardMenu {
             return;
         }
@@ -1309,7 +1309,7 @@ impl App {
     }
 }
 
-// ‼️ Helper to center a rect (e.g. for the board menu)
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::vertical([
         Constraint::Percentage((100 - percent_y) / 2),
