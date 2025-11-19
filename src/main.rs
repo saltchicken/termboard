@@ -7,7 +7,7 @@ use crossterm::{
         EventStream,
         KeyCode,
         KeyEventKind,
-        KeyModifiers, // ‼️ Removed MouseEvent imports
+        KeyModifiers,
     },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
@@ -156,13 +156,13 @@ async fn main() -> io::Result<()> {
         if crossterm::event::poll(timeout)? {
             match event_stream.next().await {
                 Some(Ok(Event::Key(key))) => {
-                    // ‼️ Ensure we only trigger on Press to avoid some key repeat issues
+
                     if key.kind == KeyEventKind::Press {
                         app.handle_key_event(key).await;
                     }
                 }
                 Some(Ok(Event::Resize(width, height))) => app.on_resize(width, height),
-                // ‼️ Removed Mouse event matching here
+
                 _ => {}
             }
         }
@@ -185,7 +185,7 @@ async fn main() -> io::Result<()> {
 enum Tool {
     #[default]
     Pointer,
-    // ‼️ DrawRect removed (replaced by 'N' hotkey)
+
     Connect,
 }
 
@@ -197,7 +197,7 @@ enum Mode {
     BoardMenu,
 }
 
-// ‼️ Removed ResizeHandle enum (resizing is now done via Ctrl+Arrow keys)
+
 
 #[derive(Clone, Copy)]
 enum ShapeKind {
@@ -252,7 +252,7 @@ impl WhiteboardShape {
         (cx + dx * scale, cy + dy * scale)
     }
 
-    // ‼️ Removed translate/resize helper methods (direct manipulation in App is simpler for keyboard)
+
 
     /// Checks if a world coordinate (x, y) is inside this shape
     fn contains(&self, x: f64, y: f64) -> bool {
@@ -264,7 +264,7 @@ impl WhiteboardShape {
         }
     }
 
-    // ‼️ Removed get_handle_collision (no mouse handles)
+
 }
 
 /// Represents a connection between two shapes, identified by their IDs.
@@ -291,11 +291,11 @@ struct App {
     board_list_state: ListState,
     new_board_input: String,
 
-    // ‼️ NEW: Keyboard Cursor Logic
+
     cursor_pos: (f64, f64),
     move_speed: f64,
 
-    // ‼️ Removed mouse drag/pan state fields
+
     /// ID of the currently selected shape.
     selected_shape_id: Option<u64>,
 
@@ -328,7 +328,7 @@ impl App {
             board_list_state: ListState::default(),
             new_board_input: String::new(),
 
-            // ‼️ Initialize cursor in middle of default view
+
             cursor_pos: (100.0, 50.0),
             move_speed: 2.0,
 
@@ -569,7 +569,7 @@ impl App {
         self.canvas_area = content_chunks[0];
 
         // --- 1. Toolbar ---
-        // ‼️ UPDATED: Toolbar reflects keyboard controls
+
         let toolbar_spans = Line::from(vec![
             Span::raw(" (N)ew Rect | (Space) Select | "),
             Span::styled(
@@ -592,7 +592,7 @@ impl App {
         frame.render_widget(Paragraph::new(toolbar_spans), main_chunks[0]);
 
         // --- 2. Canvas ---
-        // ‼️ Check camera bounds before drawing
+
         self.update_camera();
 
         let x_bounds = [self.pan_offset.0, self.pan_offset.0 + self.view_size.0];
@@ -622,7 +622,7 @@ impl App {
         }
     }
 
-    // ‼️ NEW: Helper to keep the cursor inside the visible view
+
     fn update_camera(&mut self) {
         let margin = 10.0;
         // Check Right
@@ -738,7 +738,7 @@ impl App {
             Mode::Editing => "EDITING",
             Mode::BoardMenu => "BOARDS",
         };
-        // ‼️ UPDATED: Status bar shows Cursor Position
+
         let status_spans = Line::from(vec![
             Span::styled(format!(" {} ", mode_str), Style::new().bg(Color::Red)),
             Span::raw(format!(
@@ -799,7 +799,7 @@ impl App {
             }
         }
 
-        // ‼️ UPDATED: Draw Virtual Cursor (Crosshair)
+
         let cx = self.cursor_pos.0;
         let cy = self.cursor_pos.1;
         let cursor_size = 2.0;
@@ -820,7 +820,7 @@ impl App {
         });
     }
 
-    // ‼️ MAJOR REFACTOR: Handle key events for cursor/selection/modification
+
     async fn handle_key_event(&mut self, key: event::KeyEvent) {
         if self.mode == Mode::Editing {
             match key.code {
@@ -889,7 +889,7 @@ impl App {
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
 
-                // ‼️ MOVEMENT (Arrows / HJKL)
+
                 KeyCode::Left | KeyCode::Char('h') => self.move_left(key.modifiers),
                 KeyCode::Right | KeyCode::Char('l')
                     if key.modifiers.is_empty()
@@ -901,7 +901,7 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => self.move_up(key.modifiers),
                 KeyCode::Down | KeyCode::Char('j') => self.move_down(key.modifiers),
 
-                // ‼️ SELECTION / ACTION
+
                 KeyCode::Char(' ') | KeyCode::Enter => {
                     // Try to find shape under cursor
                     if let Some(id) = self.get_shape_at(self.cursor_pos.0, self.cursor_pos.1) {
@@ -932,7 +932,7 @@ impl App {
                     }
                 }
 
-                // ‼️ NEW SHAPE
+
                 KeyCode::Char('n') | KeyCode::Char('N')
                     if !key.modifiers.contains(KeyModifiers::CONTROL) =>
                 {
@@ -955,7 +955,7 @@ impl App {
                     self.status_msg = "Created Rectangle".to_string();
                 }
 
-                // ‼️ LINK MODE
+
                 KeyCode::Char('L') => {
                     self.active_tool = Tool::Connect;
                     self.status_msg = "Link Mode: Select Start Shape".to_string();
@@ -994,7 +994,7 @@ impl App {
         }
     }
 
-    // ‼️ MOVEMENT HELPERS
+
     // Shift = Move Shape, Ctrl = Resize Shape, None = Move Cursor
     fn move_left(&mut self, mods: KeyModifiers) {
         if mods.contains(KeyModifiers::SHIFT) && self.selected_shape_id.is_some() {
@@ -1101,7 +1101,7 @@ impl Tui {
         let mut terminal = Terminal::new(backend)?;
         enable_raw_mode()?;
         io::stdout().execute(EnterAlternateScreen)?;
-        // ‼️ Removed EnableMouseCapture
+
         terminal.clear()?;
         Ok(Self { terminal })
     }
@@ -1117,8 +1117,7 @@ impl Tui {
     pub fn exit(&mut self) -> io::Result<()> {
         disable_raw_mode()?;
         io::stdout().execute(LeaveAlternateScreen)?;
-        // ‼️ Removed DisableMouseCapture
+
         Ok(())
     }
 }
-
