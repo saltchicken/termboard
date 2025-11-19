@@ -1,3 +1,6 @@
+mod config;
+
+use crate::config::setup_config;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, MouseEvent,
@@ -15,49 +18,23 @@ use ratatui::{
     },
 };
 
-use directories::ProjectDirs;
-use serde::Deserialize;
+
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 use std::{
     collections::HashMap,
-    fs,
+
     io::{self, Stdout},
     time::{Duration, Instant},
 };
 
 
-#[derive(Deserialize)]
-struct AppConfig {
-    database_url: String,
-}
 
 /// We need tokio's runtime for the async event loop
 #[tokio::main]
 async fn main() -> io::Result<()> {
 
-    let proj_dirs = ProjectDirs::from("com", "user", "tui_whiteboard")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Could not find home directory"))?;
-    let config_path = proj_dirs.config_dir().join("config.toml");
-
-    // Ensure we handle the case where config doesn't exist gracefully or error out
-    let config_content = fs::read_to_string(&config_path).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!(
-                "Could not read config at {:?}. Make sure it exists.",
-                config_path
-            ),
-        )
-    })?;
-
-    let config: AppConfig = toml::from_str(&config_content).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Config Parse Error: {}", e),
-        )
-    })?;
-
+    let config = setup_config()?;
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -66,7 +43,6 @@ async fn main() -> io::Result<()> {
         .map_err(|e| io::Error::new(io::ErrorKind::ConnectionRefused, e.to_string()))?;
 
     // Run Migrations (Create Tables)
-
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS shapes (
@@ -102,9 +78,7 @@ async fn main() -> io::Result<()> {
     let mut terminal = Tui::new()?;
 
     // --- App State ---
-
     let mut app = App::new(pool);
-
     let tick_rate = Duration::from_millis(33); // ~30 FPS
     let mut last_tick = Instant::now();
     let mut event_stream = EventStream::new();
@@ -126,7 +100,6 @@ async fn main() -> io::Result<()> {
         // Poll for event
         if crossterm::event::poll(timeout)? {
             match event_stream.next().await {
-
                 Some(Ok(Event::Key(key))) => app.handle_key_event(key).await,
                 Some(Ok(Event::Mouse(mouse))) => app.handle_mouse_event(mouse),
                 Some(Ok(Event::Resize(width, height))) => app.on_resize(width, height),
@@ -147,6 +120,7 @@ async fn main() -> io::Result<()> {
 }
 
 // --- App State and Logic ---
+
 #[derive(PartialEq, Eq, Clone, Copy, Default)]
 enum Tool {
     #[default]
@@ -215,7 +189,6 @@ impl WhiteboardShape {
         } else {
             half_w / dx.abs()
         };
-
         let scale_y = if dy == 0.0 {
             f64::INFINITY
         } else {
@@ -249,7 +222,6 @@ impl WhiteboardShape {
                 let new_width = (target_x - self.rect.x).max(1.0);
                 let old_top = self.rect.y + self.rect.height;
                 let new_height = (old_top - target_y).max(1.0);
-
                 self.rect.width = new_width;
                 self.rect.y = target_y; // moving bottom edge
                 self.rect.height = new_height;
@@ -327,7 +299,6 @@ struct Connection {
 
 /// Holds the entire state of our application.
 struct App {
-
     pool: PgPool,
     shapes: HashMap<u64, WhiteboardShape>,
     connections: Vec<Connection>,
@@ -357,12 +328,10 @@ struct App {
     is_panning: bool,
     is_dragging: bool,
     should_quit: bool,
-
     status_msg: String,
 }
 
 impl App {
-
     fn new(pool: PgPool) -> Self {
         Self {
             pool,
@@ -395,12 +364,9 @@ impl App {
         self.next_id
     }
 
-
-
     /// Saves all current shapes and connections to the DB
     async fn save_state(&mut self) {
         self.status_msg = "Saving...".to_string();
-
         let mut tx = match self.pool.begin().await {
             Ok(t) => t,
             Err(e) => {
@@ -475,7 +441,6 @@ impl App {
         self.next_id = 0;
 
         // Load Shapes
-
         let rows = match sqlx::query("SELECT * FROM shapes")
             .fetch_all(&self.pool)
             .await
@@ -488,7 +453,6 @@ impl App {
         };
 
         for row in rows {
-
             let id: i64 = row.get("id");
             let x: f64 = row.get("x");
             let y: f64 = row.get("y");
@@ -526,7 +490,6 @@ impl App {
         }
 
         // Load Connections
-
         let conn_rows = match sqlx::query("SELECT * FROM connections")
             .fetch_all(&self.pool)
             .await
@@ -539,7 +502,6 @@ impl App {
         };
 
         for row in conn_rows {
-
             let id_a: i64 = row.get("id_a");
             let id_b: i64 = row.get("id_b");
             self.connections.push(Connection {
@@ -560,7 +522,6 @@ impl App {
             Constraint::Min(0),    // Main content
             Constraint::Length(1), // Status Bar
         ])
-
         .split(frame.area());
 
         // Split main content: [Canvas] [Inspector]
@@ -598,15 +559,14 @@ impl App {
                     Style::default()
                 },
             ),
-
             Span::raw(" | (I)nspect/Edit | (S)ave | (O)pen/Load | (Q)uit"),
         ]);
-
         frame.render_widget(Paragraph::new(toolbar_spans), main_chunks[0]);
 
         // --- 2. Canvas ---
         let x_bounds = [self.pan_offset.0, self.pan_offset.0 + self.view_size.0];
         let y_bounds = [self.pan_offset.1, self.pan_offset.1 + self.view_size.1];
+
         let canvas = Canvas::default()
             .block(Block::default().title("Whiteboard").borders(Borders::ALL))
             .x_bounds(x_bounds)
@@ -614,7 +574,6 @@ impl App {
             .paint(|ctx| {
                 self.draw_on_canvas(ctx);
             });
-
         frame.render_widget(canvas, self.canvas_area);
 
         // --- 3. Inspector Panel ---
@@ -627,7 +586,6 @@ impl App {
     /// Draws the content of the inspector panel
     fn draw_inspector(&self, frame: &mut Frame, area: Rect) {
         let mut text = Vec::new();
-
         if let Some(selected_id) = self.selected_shape_id {
             if let Some(shape) = self.shapes.get(&selected_id) {
                 text.push(Line::from(Span::styled(
@@ -641,7 +599,6 @@ impl App {
                         ShapeKind::Rectangle => "Rectangle",
                     }
                 )));
-
                 text.push(Line::from("Label:"));
                 if self.mode == Mode::Editing {
                     // Show text buffer with a "cursor"
@@ -653,21 +610,18 @@ impl App {
                     text.push(Line::from(format!("> {}", shape.label)));
                     text.push(Line::from("(Press 'i' to edit)"));
                 }
-
                 text.push(Line::from(""));
                 text.push(Line::from("Dims:"));
                 text.push(Line::from(format!(
                     "W: {:.1} H: {:.1}",
                     shape.rect.width, shape.rect.height
                 )));
-
                 text.push(Line::from(""));
                 text.push(Line::from("(Del) to delete"));
             }
         } else {
             text.push(Line::from("Select a shape to inspect it."));
         }
-
         frame.render_widget(
             Paragraph::new(text).block(Block::default().title("Inspector").borders(Borders::ALL)),
             area,
@@ -682,8 +636,6 @@ impl App {
             Mode::Normal => "NORMAL",
             Mode::Editing => "EDITING",
         };
-
-
         let status_spans = Line::from(vec![
             Span::styled(format!(" {} ", mode_str), Style::new().bg(Color::Red)),
             Span::raw(format!(
@@ -798,7 +750,6 @@ impl App {
     }
 
     /// Handle key presses
-
     async fn handle_key_event(&mut self, key: event::KeyEvent) {
         if self.mode == Mode::Editing {
             // --- Editing Mode Input ---
@@ -831,7 +782,6 @@ impl App {
                 KeyCode::Char('p') | KeyCode::Char('P') => self.active_tool = Tool::Pointer,
                 KeyCode::Char('r') | KeyCode::Char('R') => self.active_tool = Tool::DrawRect,
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
-
                 KeyCode::Char('s') | KeyCode::Char('S') => self.save_state().await,
                 KeyCode::Char('o') | KeyCode::Char('O') => self.load_state().await,
                 KeyCode::Char('i') | KeyCode::Char('I') => {
@@ -881,7 +831,6 @@ impl App {
             // --- Mouse Press ---
             MouseEventKind::Down(button) => {
                 let hovered_id = self.get_shape_at(world_x, world_y);
-
                 match button {
                     event::MouseButton::Left => match self.active_tool {
                         Tool::Pointer => {
@@ -1063,6 +1012,7 @@ impl App {
 }
 
 // --- TUI Boilerplate ---
+
 /// A simple wrapper for terminal setup and teardown
 struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
@@ -1073,10 +1023,12 @@ impl Tui {
     pub fn new() -> io::Result<Self> {
         let backend = CrosstermBackend::new(io::stdout());
         let mut terminal = Terminal::new(backend)?;
+
         // Setup terminal
         enable_raw_mode()?;
         io::stdout().execute(EnterAlternateScreen)?;
         io::stdout().execute(EnableMouseCapture)?;
+
         // Clear screen
         terminal.clear()?;
         Ok(Self { terminal })

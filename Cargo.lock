@@ -323,10 +323,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "directories"
+name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
 dependencies = [
  "dirs-sys",
 ]
@@ -1793,6 +1793,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "termboard"
+version = "0.1.0"
+dependencies = [
+ "crossterm 0.29.0",
+ "dirs",
+ "futures-util",
+ "ratatui",
+ "serde",
+ "sqlx",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1943,20 +1957,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9d12581f227e93f094d3af2ae690a574abb8a2b9b7a96e7cfe9647b2b617678"
 dependencies = [
  "once_cell",
-]
-
-[[package]]
-name = "tui_whiteboard"
-version = "0.1.0"
-dependencies = [
- "crossterm 0.29.0",
- "directories",
- "futures-util",
- "ratatui",
- "serde",
- "sqlx",
- "tokio",
- "toml",
 ]
 
 [[package]]

@@ -1,5 +1,5 @@
 [package]
-name = "tui_whiteboard"
+name = "termboard"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,11 +15,4 @@ sqlx = { version = "0.8.6", features = [
 ] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9.8"
-directories = "6.0.0"
-
-[profile.release]
-strip = true
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
+dirs = "6.0.0"
