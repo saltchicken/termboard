@@ -10,11 +10,8 @@ use futures_util::StreamExt;
 use ratatui::{
     prelude::*,
     widgets::{
-
         canvas::{self, Canvas, Context, Line as CanvasLine, Rectangle},
-        Block,
-        Borders,
-        Paragraph,
+        Block, Borders, Paragraph,
     },
 };
 use std::{
@@ -78,7 +75,6 @@ enum Tool {
     #[default]
     Pointer,
     DrawRect,
-
     Connect,
 }
 
@@ -92,7 +88,6 @@ enum Mode {
 #[derive(Clone, Copy)]
 enum ShapeKind {
     Rectangle,
-
 }
 
 #[derive(Clone)]
@@ -236,7 +231,6 @@ impl App {
                     Style::default()
                 },
             ),
-
             Span::styled(
                 " (L)ink ",
                 if self.active_tool == Tool::Connect {
@@ -247,6 +241,7 @@ impl App {
             ),
             Span::raw(" | (I)nspect/Edit | (Q)uit"),
         ]);
+
         frame.render_widget(Paragraph::new(toolbar_spans), main_chunks[0]);
 
         // --- 2. Canvas ---
@@ -260,6 +255,7 @@ impl App {
             .paint(|ctx| {
                 self.draw_on_canvas(ctx);
             });
+
         frame.render_widget(canvas, self.canvas_area);
 
         // --- 3. Inspector Panel ---
@@ -283,10 +279,10 @@ impl App {
                     "Kind: {}",
                     match shape.kind {
                         ShapeKind::Rectangle => "Rectangle",
-
                     }
                 )));
                 text.push(Line::from("Label:"));
+
                 if self.mode == Mode::Editing {
                     // Show text buffer with a "cursor"
                     text.push(Line::from(Span::styled(
@@ -365,9 +361,10 @@ impl App {
 
             // Draw the label
             if !shape.label.is_empty() {
+                let x_offset = shape.label.len() as f64 / 2.0;
                 ctx.print(
-                    shape.center().0,
-                    shape.rect.y - 2.0, // A bit above the shape
+                    shape.center().0 - x_offset,
+                    shape.center().1,
                     Line::from(shape.label.clone()).fg(Color::White),
                 );
             }
@@ -426,7 +423,6 @@ impl App {
                 KeyCode::Char('q') | KeyCode::Char('Q') => self.should_quit = true,
                 KeyCode::Char('p') | KeyCode::Char('P') => self.active_tool = Tool::Pointer,
                 KeyCode::Char('r') | KeyCode::Char('R') => self.active_tool = Tool::DrawRect,
-
                 KeyCode::Char('l') | KeyCode::Char('L') => self.active_tool = Tool::Connect,
                 KeyCode::Char('i') | KeyCode::Char('I') => {
                     if self.selected_shape_id.is_some() {
@@ -502,7 +498,6 @@ impl App {
                             };
                             self.shapes.insert(id, new_shape);
                         }
-
                         Tool::Connect => {
                             if let Some(id) = hovered_id {
                                 if let Some(start_id) = self.connect_start_id.take() {
@@ -523,6 +518,7 @@ impl App {
                     _ => {}
                 }
             }
+
             // --- Mouse Drag ---
             MouseEventKind::Drag(button) => {
                 match button {
@@ -556,8 +552,7 @@ impl App {
                                 // Pan by subtracting delta (inverted Y)
                                 self.pan_offset.0 -= dx_world;
                                 self.pan_offset.1 += dy_world; // Y is inverted
-
-                                // Reset start pos for next drag event
+                                                               // Reset start pos for next drag event
                                 self.pan_start_pos = Some((mouse.column, mouse.row));
                             }
                         }
@@ -565,6 +560,7 @@ impl App {
                     _ => {}
                 }
             }
+
             // --- Mouse Release ---
             MouseEventKind::Up(button) => match button {
                 event::MouseButton::Left => {
@@ -593,16 +589,22 @@ impl App {
         // Future use: animations, etc.
     }
 
-    /// Converts terminal cell coordinates to canvas world coordinates
     fn terminal_to_world_coords(&self, col: u16, row: u16) -> (f64, f64) {
         if self.canvas_area.width == 0 || self.canvas_area.height == 0 {
             return (0.0, 0.0);
         }
+
+
+        // The drawing area is 1 cell inward from the layout chunk
+        let inner_x = self.canvas_area.x + 1;
+        let inner_y = self.canvas_area.y + 1;
+
+        let inner_width = self.canvas_area.width.saturating_sub(2).max(1);
+        let inner_height = self.canvas_area.height.saturating_sub(2).max(1);
+
         // Normalize coordinates within the canvas area (0.0 to 1.0)
-        let norm_x =
-            (col.saturating_sub(self.canvas_area.x)) as f64 / self.canvas_area.width as f64;
-        let norm_y =
-            (row.saturating_sub(self.canvas_area.y)) as f64 / self.canvas_area.height as f64;
+        let norm_x = (col.saturating_sub(inner_x)) as f64 / inner_width as f64;
+        let norm_y = (row.saturating_sub(inner_y)) as f64 / inner_height as f64;
 
         // Map to world coordinates
         // Y is inverted: 0.0 at top of terminal, 1.0 at bottom
